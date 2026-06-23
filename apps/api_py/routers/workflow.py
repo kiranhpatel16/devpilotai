@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 import re as re_module
+import asyncio
 from lib.errors import HttpError
 from middleware.auth import get_auth, is_admin_role, can_write_on_project
 from db.runs import runs_repo
@@ -14,7 +15,7 @@ from services.ai_service import run_ai
 from services.repo_context import build_repo_context
 from services.git_service import compute_diffs, create_branch, get_status
 from services.run_detail import load_detail, patch_detail, save_detail
-from services.task_plan_storage import save_task_plan
+from services.task_plan_storage import save_task_plan, read_task_plan
 from services.ai_providers.registry import enabled_provider_info
 from services.workflow import (
     WORKFLOW_STEPS,
@@ -31,6 +32,8 @@ from services.deploy_service import run_local_deploy
 from database import now_iso
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+
+_deploy_tasks: dict[str, asyncio.Task] = {}
 
 
 class StartWorkflowBody(BaseModel):
@@ -50,6 +53,10 @@ class UpdateStepBody(BaseModel):
 
 class SavePlanBody(BaseModel):
     planMarkdown: str
+
+
+class PostJiraCommentBody(BaseModel):
+    comment: str
 
 
 class CommitBody(BaseModel):
@@ -252,6 +259,23 @@ async def update_workflow_step(run_id: str, body: UpdateStepBody, auth: dict = D
     return {"detail": _assemble_detail(run_id)}
 
 
+@router.get("/runs/{run_id}/saved-plan")
+async def get_saved_plan(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    plan_path = detail.get("planFilePath") or wf.get("planFilePath")
+    if not plan_path:
+        raise HttpError.not_found("No saved plan file")
+    try:
+        plan_text = read_task_plan(plan_path)
+    except FileNotFoundError as err:
+        raise HttpError.not_found(str(err)) from err
+    except ValueError as err:
+        raise HttpError.bad_request(str(err)) from err
+    return {"planMarkdown": plan_text, "planFilePath": plan_path}
+
+
 @router.post("/runs/{run_id}/generate-plan")
 async def generate_plan(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
@@ -431,17 +455,56 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     if wf["approvalStatus"] != "code_approved":
         raise HttpError.bad_request("Approve code before deploying")
 
+    existing = detail.get("deploy")
+    if existing and existing.get("running"):
+        if run_id in _deploy_tasks and not _deploy_tasks[run_id].done():
+            return {"detail": _assemble_detail(run_id)}
+        patch_detail(run_id, {"deploy": {**existing, "running": False}})
+
     resolved = resolve_environment(run["userId"], run["projectId"])
     php_bin = resolved["env"].get("phpBin") or "php"
-    report = await run_local_deploy(
-        resolved["cwd"],
-        php_bin,
-        resolved["env"].get("dockerComposePath"),
-    )
-    patch_detail(run_id, {"deploy": report})
-    runs_repo.update_fields(run_id, {
-        "status": "deploy_ready" if report["ok"] else "deploy_failed",
+    docker_compose_path = resolved["env"].get("dockerComposePath")
+    cwd = resolved["cwd"]
+
+    patch_detail(run_id, {
+        "deploy": {
+            "ranAt": now_iso(),
+            "ok": False,
+            "running": True,
+            "steps": [],
+        },
     })
+    runs_repo.update_fields(run_id, {"status": "deploying"})
+
+    async def on_progress(report: dict) -> None:
+        patch_detail(run_id, {"deploy": report})
+
+    async def job() -> None:
+        try:
+            report = await run_local_deploy(
+                cwd,
+                php_bin,
+                docker_compose_path,
+                on_progress=on_progress,
+            )
+            patch_detail(run_id, {"deploy": report})
+            runs_repo.update_fields(run_id, {
+                "status": "deploy_ready" if report["ok"] else "deploy_failed",
+            })
+        except Exception as exc:
+            failed = {
+                "ranAt": now_iso(),
+                "ok": False,
+                "running": False,
+                "steps": load_detail(run_id).get("deploy", {}).get("steps", []),
+                "error": str(exc),
+            }
+            patch_detail(run_id, {"deploy": failed})
+            runs_repo.update_fields(run_id, {"status": "deploy_failed"})
+        finally:
+            _deploy_tasks.pop(run_id, None)
+
+    _deploy_tasks[run_id] = asyncio.create_task(job())
     return {"detail": _assemble_detail(run_id)}
 
 
@@ -467,20 +530,33 @@ async def complete_deploy(run_id: str, auth: dict = Depends(get_auth)):
     return {"detail": _assemble_detail(run_id)}
 
 
-@router.post("/runs/{run_id}/post-jira-comment")
-async def post_jira(run_id: str, auth: dict = Depends(get_auth)):
+@router.get("/runs/{run_id}/jira-comment-preview")
+async def jira_comment_preview(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     if not run.get("jiraKey"):
         raise HttpError.bad_request("No Jira task linked to this run")
     detail = load_detail(run_id)
     resolved = resolve_environment(run["userId"], run["projectId"])
     comment = format_jira_comment(run, detail, resolved["project"])
+    return {"comment": comment}
+
+
+@router.post("/runs/{run_id}/post-jira-comment")
+async def post_jira(run_id: str, body: PostJiraCommentBody, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    if not run.get("jiraKey"):
+        raise HttpError.bad_request("No Jira task linked to this run")
+    comment = body.comment.strip()
+    if not comment:
+        raise HttpError.bad_request("Comment cannot be empty")
+    detail = load_detail(run_id)
     result = await post_issue_comment(run["projectId"], run["jiraKey"], comment)
     comment_id = str(result.get("id", ""))
     wf = extract_workflow(detail)
     patch_detail(run_id, {
         "jiraCommentPostedAt": now_iso(),
         "jiraCommentId": comment_id or None,
+        "jiraCommentText": comment,
         "currentStep": "done",
         "completedSteps": mark_completed(wf["completedSteps"], "jira_comment"),
         "approvalStatus": "done",

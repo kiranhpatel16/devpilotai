@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AiProviderInfo } from '@cpwork/shared';
 import { api, getApiErrorMessage } from '../../lib/api';
@@ -47,7 +47,7 @@ export function AdminAiProvidersPage() {
             key={p.id}
             provider={p}
             onSaved={invalidate}
-            onDelete={p.custom ? () => setDeleting(p) : undefined}
+            onDelete={p.deletable ?? p.custom ? () => setDeleting(p) : undefined}
           />
         ))}
       </div>
@@ -89,21 +89,58 @@ function ProviderCard({
 }) {
   const [enabled, setEnabled] = useState(provider.enabled);
   const [apiKey, setApiKey] = useState('');
+  const [models, setModels] = useState<string[]>(provider.models);
+  const [newModel, setNewModel] = useState('');
   const [defaultModel, setDefaultModel] = useState(provider.defaultModel ?? '');
-  const [baseUrl, setBaseUrl] = useState('');
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? '');
+  const [keyConfigured, setKeyConfigured] = useState(provider.configured);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testOk, setTestOk] = useState<boolean | null>(null);
 
   const unavailable = provider.id === 'cursor';
+  const canTest = keyConfigured || !!apiKey.trim();
+
+  useEffect(() => {
+    setEnabled(provider.enabled);
+    setModels(provider.models);
+    setDefaultModel(provider.defaultModel ?? '');
+    setBaseUrl(provider.baseUrl ?? '');
+    setKeyConfigured(provider.configured);
+  }, [provider.id, provider.enabled, provider.models, provider.defaultModel, provider.baseUrl, provider.configured]);
+
+  function addModel() {
+    const value = newModel.trim();
+    if (!value || models.includes(value)) return;
+    const next = [...models, value];
+    setModels(next);
+    if (!defaultModel || !models.includes(defaultModel)) setDefaultModel(value);
+    setNewModel('');
+  }
+
+  function removeModel(model: string) {
+    const next = models.filter((m) => m !== model);
+    setModels(next);
+    if (defaultModel === model) setDefaultModel(next[0] ?? '');
+  }
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const body: Record<string, unknown> = { enabled, defaultModel };
+      const body: Record<string, unknown> = { enabled, defaultModel, models };
       if (apiKey.trim()) body.apiKey = apiKey.trim();
       if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
-      await api.put(`/admin/ai-providers/${provider.id}`, body);
+      return (await api.put(`/admin/ai-providers/${provider.id}`, body)).data as ProvidersResponse;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const saved = data.providers.find((p) => p.id === provider.id);
+      if (saved) {
+        setKeyConfigured(saved.configured);
+        setEnabled(saved.enabled);
+        setModels(saved.models);
+        setDefaultModel(saved.defaultModel ?? defaultModel);
+        setBaseUrl(saved.baseUrl ?? baseUrl);
+      } else if (apiKey.trim()) {
+        setKeyConfigured(true);
+      }
       setApiKey('');
       setTestResult(null);
       setTestOk(null);
@@ -112,7 +149,14 @@ function ProviderCard({
   });
 
   const testMutation = useMutation({
-    mutationFn: async () => (await api.post(`/admin/ai-providers/${provider.id}/test`)).data,
+    mutationFn: async () =>
+      (
+        await api.post(`/admin/ai-providers/${provider.id}/test`, {
+          ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+          ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+          ...(defaultModel ? { defaultModel } : {}),
+        })
+      ).data,
     onMutate: () => {
       setTestResult(null);
       setTestOk(null);
@@ -138,13 +182,17 @@ function ProviderCard({
             )}
           </h2>
           <p className="text-xs text-slate-400">
-            {provider.configured ? 'Key configured' : 'No key set'}
-            {provider.enabled ? ' · enabled' : ''}
+            {keyConfigured ? 'Key configured' : 'No key set'}
+            {enabled ? ' · enabled' : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {onDelete && (
-            <button className="btn-danger text-xs" onClick={onDelete}>
+            <button
+              type="button"
+              className="btn-danger border border-red-200 text-xs"
+              onClick={onDelete}
+            >
               Delete
             </button>
           )}
@@ -167,14 +215,61 @@ function ProviderCard({
       ) : (
         <>
           <div>
-            <label className="label">API key {provider.configured && '(leave blank to keep)'}</label>
+            <label className="label">API key {keyConfigured && '(leave blank to keep)'}</label>
             <input
               type="password"
               className="input"
-              placeholder={provider.configured ? '•••••••• stored' : 'Paste API key'}
+              placeholder={keyConfigured ? '•••••••• stored' : 'Paste API key'}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
             />
+            {keyConfigured && (
+              <p className="mt-1 text-xs text-green-700">API key saved for this provider.</p>
+            )}
+          </div>
+          <div>
+            <label className="label">Models</label>
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {models.map((m) => (
+                <span
+                  key={m}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-700"
+                >
+                  {m}
+                  <button
+                    type="button"
+                    className="text-slate-400 hover:text-red-600"
+                    title="Remove model"
+                    onClick={() => removeModel(m)}
+                    disabled={models.length <= 1}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                className="input font-mono text-xs"
+                placeholder="Add model id"
+                value={newModel}
+                onChange={(e) => setNewModel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addModel();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn-secondary shrink-0 text-xs"
+                disabled={!newModel.trim() || models.includes(newModel.trim())}
+                onClick={addModel}
+              >
+                Add
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
@@ -184,7 +279,7 @@ function ProviderCard({
                 value={defaultModel}
                 onChange={(e) => setDefaultModel(e.target.value)}
               >
-                {provider.models.map((m) => (
+                {models.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
@@ -194,11 +289,16 @@ function ProviderCard({
             <div>
               <label className="label">Base URL (optional)</label>
               <input
-                className="input"
-                placeholder="default"
+                className="input font-mono text-xs"
+                placeholder={provider.defaultBaseUrl ?? 'default'}
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
               />
+              {!baseUrl.trim() && provider.defaultBaseUrl && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Requests use {provider.defaultBaseUrl}
+                </p>
+              )}
             </div>
           </div>
 
@@ -212,16 +312,20 @@ function ProviderCard({
           <div className="flex gap-2">
             <button
               className="btn-primary"
-              disabled={saveMutation.isPending}
+              disabled={saveMutation.isPending || models.length === 0 || !defaultModel}
               onClick={() => saveMutation.mutate()}
             >
               {saveMutation.isPending ? 'Saving…' : 'Save'}
             </button>
             <button
               className="btn-secondary"
-              disabled={testMutation.isPending || !provider.configured}
+              disabled={testMutation.isPending || !canTest}
               onClick={() => testMutation.mutate()}
-              title={provider.configured ? 'Test the stored key' : 'Save a key first'}
+              title={
+                canTest
+                  ? 'Uses the typed key or the saved provider key when the field is blank'
+                  : 'Paste an API key or save one first'
+              }
             >
               {testMutation.isPending ? 'Testing…' : 'Test connection'}
             </button>

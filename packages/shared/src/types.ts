@@ -222,11 +222,17 @@ export interface AiProviderInfo {
   enabled: boolean;
   configured: boolean;
   defaultModel: string | null;
+  /** Saved override base URL, if any. */
+  baseUrl?: string | null;
+  /** Provider catalog default API base URL. */
+  defaultBaseUrl?: string | null;
   models: string[];
   /** Whether this provider can run the file-editing Agent mode in this build. */
   supportsAgent: boolean;
   /** User-defined OpenAI-compatible provider (can be deleted). */
   custom?: boolean;
+  /** Whether this provider can be removed from the system. */
+  deletable?: boolean;
 }
 
 export type FileChangeAction = 'create' | 'modify' | 'delete';
@@ -297,6 +303,9 @@ export interface TestReport {
   ranAt: string;
   ok: boolean;
   steps: TestStep[];
+  /** True while a local deploy job is still running. */
+  running?: boolean;
+  error?: string | null;
 }
 
 // ----- Git -----
@@ -312,6 +321,8 @@ export interface GitInfo {
   pushed: boolean;
   commitMessage: string | null;
   prUrl: string | null;
+  /** True when local changes were stashed before creating the workflow branch. */
+  stashed?: boolean;
 }
 
 // ----- Run detail (assembled view) -----
@@ -371,6 +382,7 @@ export interface TaskRunState {
   approvalStatus: ApprovalStatus;
   jiraCommentPostedAt: string | null;
   jiraCommentId: string | null;
+  jiraCommentText: string | null;
   testPassRate: string | null;
 }
 

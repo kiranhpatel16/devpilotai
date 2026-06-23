@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
-import type { TaskHistoryRow } from '@cpwork/shared';
+import type { RunDetail, TaskHistoryRow } from '@cpwork/shared';
 import { api } from '../../lib/api';
 
 export function TaskHistoryGrid({

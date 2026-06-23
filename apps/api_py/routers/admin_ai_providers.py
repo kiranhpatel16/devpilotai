@@ -8,7 +8,15 @@ from middleware.auth import require_admin
 from db.ai_settings import ai_settings_repo
 from db.custom_ai_providers import custom_ai_providers_repo
 from services.ai_providers.catalog import PROVIDER_CATALOG, PROVIDER_IDS
-from services.ai_providers.registry import get_adapter, resolve_creds, list_provider_info, _catalog_entry
+from services.ai_providers.registry import (
+    get_adapter,
+    resolve_creds,
+    resolve_creds_for_test,
+    list_provider_info,
+    _catalog_entry,
+    _effective_models,
+    validate_endpoint_models,
+)
 
 router = APIRouter(prefix="/api/admin/ai-providers", tags=["admin-ai-providers"])
 
@@ -18,6 +26,7 @@ class UpdateProviderBody(BaseModel):
     apiKey: Optional[str] = None
     baseUrl: Optional[str] = None
     defaultModel: Optional[str] = None
+    models: Optional[list[str]] = None
 
 
 class CreateProviderBody(BaseModel):
@@ -80,20 +89,47 @@ async def update_provider(provider_id: str, body: UpdateProviderBody, auth: dict
     if not _is_known_provider(provider_id):
         raise HttpError.not_found("Unknown provider")
 
-    fields = {}
-    if body.enabled is not None:
-        fields["enabled"] = body.enabled
-    if body.baseUrl is not None:
-        fields["baseUrl"] = body.baseUrl
-    if body.defaultModel is not None:
-        entry = _catalog_entry(provider_id)
-        if entry and body.defaultModel not in entry["models"]:
-            raise HttpError.bad_request("Default model must be one of the provider's models")
-        fields["defaultModel"] = body.defaultModel
-    if body.apiKey is not None:
-        fields["apiKeyEnc"] = encrypt_secret(body.apiKey) if body.apiKey else None
+    raw = body.model_dump(exclude_unset=True)
+    setting = ai_settings_repo.get(provider_id)
+    entry = _catalog_entry(provider_id)
+    if not entry:
+        raise HttpError.not_found("Unknown provider")
 
-    ai_settings_repo.upsert(provider_id, fields, auth["sub"])
+    fields: dict = {}
+    models_updated: list[str] | None = None
+
+    if "models" in raw:
+        models_updated = [m.strip() for m in raw["models"] if m and m.strip()]
+        if not models_updated:
+            raise HttpError.bad_request("At least one model is required")
+        if provider_id in PROVIDER_IDS:
+            extra = dict(setting["extra"]) if setting else {}
+            extra["models"] = models_updated
+            fields["extra"] = extra
+        else:
+            custom_ai_providers_repo.update(provider_id, {"models": models_updated})
+
+        if "defaultModel" not in raw:
+            current_default = (
+                (setting["defaultModel"] if setting else None) or entry["defaultModel"]
+            )
+            if current_default not in models_updated:
+                fields["defaultModel"] = models_updated[0]
+
+    if "enabled" in raw:
+        fields["enabled"] = raw["enabled"]
+    if "baseUrl" in raw:
+        fields["baseUrl"] = raw["baseUrl"]
+    if "defaultModel" in raw:
+        effective = models_updated or _effective_models(provider_id, entry, setting)
+        if raw["defaultModel"] not in effective:
+            raise HttpError.bad_request("Default model must be one of the provider's models")
+        fields["defaultModel"] = raw["defaultModel"]
+    if "apiKey" in raw:
+        fields["apiKeyEnc"] = encrypt_secret(raw["apiKey"]) if raw["apiKey"] else None
+
+    if fields:
+        ai_settings_repo.upsert(provider_id, fields, auth["sub"])
     return {"providers": list_provider_info()}
 
 
@@ -109,11 +145,24 @@ async def delete_provider(provider_id: str, auth: dict = Depends(require_admin))
     return {"ok": True}
 
 
+class TestProviderBody(BaseModel):
+    apiKey: Optional[str] = None
+    baseUrl: Optional[str] = None
+    defaultModel: Optional[str] = None
+
+
 @router.post("/{provider_id}/test")
-async def test_provider(provider_id: str, auth: dict = Depends(require_admin)):
+async def test_provider(
+    provider_id: str,
+    body: TestProviderBody = TestProviderBody(),
+    auth: dict = Depends(require_admin),
+):
     if not _is_known_provider(provider_id):
         raise HttpError.not_found("Unknown provider")
-    resolved = resolve_creds(provider_id)
+    overrides = body.model_dump(exclude_unset=True)
+    resolved = resolve_creds_for_test(provider_id, overrides or None)
+    setting = ai_settings_repo.get(provider_id)
+    validate_endpoint_models(provider_id, resolved["creds"], setting)
     adapter = get_adapter(provider_id)
     await adapter["verify"](resolved["creds"])
     entry = _catalog_entry(provider_id)

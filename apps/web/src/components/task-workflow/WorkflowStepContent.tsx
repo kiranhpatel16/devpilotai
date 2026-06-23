@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import type {
   AiProviderInfo,
   JiraIssueDetail,
@@ -9,6 +9,58 @@ import type {
 } from '@cpwork/shared';
 import { api, getApiErrorMessage } from '../../lib/api';
 import { RunPanel } from '../RunPanel';
+import { previousStep } from './constants';
+import {
+  DeployProgressModal,
+  type DeployPipelinePhase,
+} from './DeployProgressModal';
+import { SelectedJiraTaskCard } from './SelectedJiraTaskCard';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function PlanGeneratingLoader({ label }: { label: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-10">
+      <div
+        className="h-9 w-9 animate-spin rounded-full border-2 border-slate-200 border-t-brand-600"
+        role="status"
+        aria-label={label}
+      />
+      <p className="text-sm text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function StepActions({
+  step,
+  onBack,
+  backPending,
+  children,
+}: {
+  step: TaskWorkflowStep;
+  onBack: (step: TaskWorkflowStep) => void;
+  backPending?: boolean;
+  children?: ReactNode;
+}) {
+  const prev = previousStep(step);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {prev && (
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={backPending}
+          onClick={() => onBack(prev)}
+        >
+          ← Back
+        </button>
+      )}
+      {children}
+    </div>
+  );
+}
 
 export function WorkflowStepContent({
   detail,
@@ -16,12 +68,16 @@ export function WorkflowStepContent({
   providers,
   onChange,
   onNavigate,
+  onShowHistory,
+  onStartNewTask,
 }: {
   detail: RunDetail;
   project: Project;
   providers: AiProviderInfo[];
   onChange: (d: RunDetail) => void;
   onNavigate: (step: TaskWorkflowStep) => void;
+  onShowHistory?: () => void;
+  onStartNewTask?: () => void;
 }) {
   const wf = detail.workflow!;
   const run = detail.run;
@@ -31,8 +87,14 @@ export function WorkflowStepContent({
   const [model, setModel] = useState(run.model || '');
   const [instructions, setInstructions] = useState(run.userInstructions || '');
   const [planMarkdown, setPlanMarkdown] = useState(wf.planMarkdown || '');
-  const [commitMessage, setCommitMessage] = useState('');
+  const [jiraCommentDraft, setJiraCommentDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [deployPhase, setDeployPhase] = useState<DeployPipelinePhase>('deploy');
+  const [deployModalError, setDeployModalError] = useState<string | null>(null);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const pipelineRunningRef = useRef(false);
+  const jiraDraftInitializedRef = useRef(false);
 
   useEffect(() => {
     setBranchName(run.branchName || run.jiraKey || '');
@@ -40,9 +102,6 @@ export function WorkflowStepContent({
     setModel(run.model || '');
     setInstructions(run.userInstructions || '');
     setPlanMarkdown(wf.planMarkdown || '');
-    if (run.jiraKey && detail.output?.summary) {
-      setCommitMessage(`${run.jiraKey}: ${detail.output.summary}`);
-    }
   }, [run.id, wf.planMarkdown, detail.output?.summary]);
 
   const activeProvider = providers.find((p) => p.id === provider) || providers[0];
@@ -119,23 +178,161 @@ export function WorkflowStepContent({
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
+  async function pollDeployStatus(): Promise<RunDetail> {
+    while (true) {
+      const latest = (await api.get<{ detail: RunDetail }>(`/workflow/runs/${run.id}`)).data.detail;
+      onChange(latest);
+      const deploy = latest.deploy;
+      if (!deploy?.running) {
+        return latest;
+      }
+      await sleep(2000);
+    }
+  }
+
+  async function runDeployPipeline() {
+    if (pipelineRunningRef.current) return;
+    pipelineRunningRef.current = true;
+    setPipelineRunning(true);
+    setDeployModalOpen(true);
+    setDeployPhase('deploy');
+    setDeployModalError(null);
+    setError(null);
+
+    try {
+      await deployM.mutateAsync();
+      const afterDeploy = await pollDeployStatus();
+      if (!afterDeploy.deploy?.ok) {
+        setDeployPhase('failed');
+        setDeployModalError('Local deploy failed. Review the step output above.');
+        return;
+      }
+
+      const current = await completeDeployM.mutateAsync();
+      onChange(current);
+      setDeployPhase('done');
+    } catch (err) {
+      setDeployPhase('failed');
+      setDeployModalError(getApiErrorMessage(err));
+    } finally {
+      pipelineRunningRef.current = false;
+      setPipelineRunning(false);
+    }
+  }
+
+  function closeDeployModal() {
+    setDeployModalOpen(false);
+    setDeployModalError(null);
+    if (deployPhase === 'done') {
+      setDeployPhase('deploy');
+    }
+  }
+
   const postJiraM = useMutation({
-    mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/post-jira-comment`)).data
-        .detail,
+    mutationFn: async (comment: string) =>
+      (
+        await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/post-jira-comment`, {
+          comment,
+        })
+      ).data.detail,
+    onMutate: () => setError(null),
     onSuccess: (d) => onChange(d),
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
+  const step = wf.currentStep;
+
+  const savedPlanQ = useQuery({
+    queryKey: ['saved-plan', run.id, wf.planFilePath],
+    queryFn: async () =>
+      (
+        await api.get<{ planMarkdown: string; planFilePath: string }>(
+          `/workflow/runs/${run.id}/saved-plan`,
+        )
+      ).data,
+    enabled: step === 'plan' && !wf.planMarkdown && !!wf.planFilePath,
+  });
+
+  const hasSavedPlan = !!(wf.planMarkdown || wf.planFilePath);
+  const isLoadingSavedPlan =
+    step === 'plan' && !wf.planMarkdown && !!wf.planFilePath && savedPlanQ.isLoading;
+  const showPlanGenerating =
+    step === 'plan' && ((!hasSavedPlan && !planMarkdown) || isLoadingSavedPlan);
+  const showPlanEditor =
+    step === 'review_plan' ||
+    (step === 'plan' && hasSavedPlan && !isLoadingSavedPlan && !!(wf.planMarkdown || planMarkdown));
+
+  const jiraPreviewQ = useQuery({
+    queryKey: ['jira-comment-preview', run.id],
+    queryFn: async () =>
+      (await api.get<{ comment: string }>(`/workflow/runs/${run.id}/jira-comment-preview`)).data,
+    enabled: step === 'jira_comment' && !wf.jiraCommentPostedAt && !!run.jiraKey,
+  });
+
+  useEffect(() => {
+    jiraDraftInitializedRef.current = false;
+    setJiraCommentDraft('');
+  }, [run.id]);
+
+  useEffect(() => {
+    if (
+      jiraPreviewQ.data?.comment &&
+      !jiraDraftInitializedRef.current &&
+      !wf.jiraCommentPostedAt
+    ) {
+      setJiraCommentDraft(jiraPreviewQ.data.comment);
+      jiraDraftInitializedRef.current = true;
+    }
+  }, [jiraPreviewQ.data?.comment, wf.jiraCommentPostedAt]);
+
+  useEffect(() => {
+    if (savedPlanQ.data?.planMarkdown) {
+      setPlanMarkdown(savedPlanQ.data.planMarkdown);
+    }
+  }, [savedPlanQ.data?.planMarkdown]);
+
   useEffect(() => {
     const current = wf.currentStep;
-    if (current === 'plan' && !wf.planMarkdown && !generatePlanM.isPending && !generatePlanM.isSuccess) {
+    if (
+      current === 'plan' &&
+      !hasSavedPlan &&
+      !savedPlanQ.isLoading &&
+      !generatePlanM.isPending &&
+      !generatePlanM.isSuccess
+    ) {
       generatePlanM.mutate();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wf.currentStep, run.id]);
+  }, [wf.currentStep, run.id, hasSavedPlan, savedPlanQ.isLoading]);
 
-  const step = wf.currentStep;
+  useEffect(() => {
+    if (wf.currentStep !== 'deploy' || !detail.deploy?.running || pipelineRunningRef.current) return;
+    setDeployModalOpen(true);
+    setDeployPhase('deploy');
+    void (async () => {
+      pipelineRunningRef.current = true;
+      setPipelineRunning(true);
+      try {
+        const afterDeploy = await pollDeployStatus();
+        if (!afterDeploy.deploy?.ok) {
+          setDeployPhase('failed');
+          return;
+        }
+        const current = await completeDeployM.mutateAsync();
+        onChange(current);
+        setDeployPhase('done');
+      } catch (err) {
+        setDeployPhase('failed');
+        setDeployModalError(getApiErrorMessage(err));
+      } finally {
+        pipelineRunningRef.current = false;
+        setPipelineRunning(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wf.currentStep, run.id, detail.deploy?.running]);
+
+  const goBack = (target: TaskWorkflowStep) => onNavigate(target);
 
   return (
     <div className="space-y-4">
@@ -146,11 +343,20 @@ export function WorkflowStepContent({
       )}
 
       {step === 'select' && (
-        <div className="card p-4">
-          <p className="text-sm text-slate-600">Task selected. Continue to branch setup.</p>
-          <button className="btn-primary mt-3" onClick={() => saveStepM.mutate('branch')}>
-            Start task →
-          </button>
+        <div className="card space-y-4 p-4">
+          {jira ? (
+            <SelectedJiraTaskCard issue={jira} productionBranch={project.git.productionBranch} />
+          ) : (
+            <div>
+              <span className="badge bg-brand-100 text-brand-700">Custom task</span>
+              <h2 className="mt-2 text-lg font-semibold">{wf.customTitle || 'Custom task'}</h2>
+            </div>
+          )}
+          <StepActions step={step} onBack={goBack}>
+            <button className="btn-primary" onClick={() => saveStepM.mutate('branch')}>
+              Start task →
+            </button>
+          </StepActions>
         </div>
       )}
 
@@ -223,13 +429,15 @@ export function WorkflowStepContent({
               </select>
             </div>
           </div>
-          <button
-            className="btn-primary"
-            disabled={!branchName.trim() || saveStepM.isPending}
-            onClick={() => saveStepM.mutate('describe')}
-          >
-            Continue →
-          </button>
+          <StepActions step={step} onBack={goBack} backPending={saveStepM.isPending}>
+            <button
+              className="btn-primary"
+              disabled={!branchName.trim() || saveStepM.isPending}
+              onClick={() => saveStepM.mutate('describe')}
+            >
+              Continue →
+            </button>
+          </StepActions>
         </div>
       )}
 
@@ -254,27 +462,43 @@ export function WorkflowStepContent({
               onChange={(e) => setInstructions(e.target.value)}
             />
           </div>
-          <button
-            className="btn-primary"
-            disabled={saveStepM.isPending}
-            onClick={async () => {
-              await saveStepM.mutateAsync('plan');
-              generatePlanM.mutate();
-            }}
-          >
-            Generate plan →
-          </button>
+          <StepActions step={step} onBack={goBack} backPending={saveStepM.isPending || generatePlanM.isPending}>
+            <button
+              className="btn-primary"
+              disabled={saveStepM.isPending || generatePlanM.isPending}
+              onClick={async () => {
+                await saveStepM.mutateAsync('plan');
+                generatePlanM.mutate();
+              }}
+            >
+              {saveStepM.isPending || generatePlanM.isPending ? 'Generating plan…' : 'Generate plan →'}
+            </button>
+          </StepActions>
         </div>
       )}
 
-      {step === 'plan' && (
-        <div className="card p-4 text-sm text-slate-500">
-          {generatePlanM.isPending ? 'Generating implementation plan…' : 'Preparing plan…'}
+      {showPlanGenerating && (
+        <div className="card space-y-3 p-4">
+          <PlanGeneratingLoader
+            label={
+              isLoadingSavedPlan
+                ? 'Loading saved plan…'
+                : generatePlanM.isPending
+                  ? 'Generating implementation plan…'
+                  : 'Preparing plan…'
+            }
+          />
+          <StepActions step={step} onBack={goBack} backPending={generatePlanM.isPending} />
         </div>
       )}
 
-      {step === 'review_plan' && (
-        <div className="card space-y-4 p-4">
+      {showPlanEditor && (
+        <div className="card relative space-y-4 p-4">
+          {generatePlanM.isPending && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/85">
+              <PlanGeneratingLoader label="Regenerating implementation plan…" />
+            </div>
+          )}
           {wf.planFilePath && (
             <p className="text-xs text-slate-500">
               Saved to <code className="rounded bg-slate-100 px-1">{wf.planFilePath}</code>
@@ -286,22 +510,35 @@ export function WorkflowStepContent({
             onChange={(e) => setPlanMarkdown(e.target.value)}
             onBlur={() => savePlanM.mutate()}
           />
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="btn-secondary"
-              disabled={generatePlanM.isPending}
-              onClick={() => generatePlanM.mutate()}
-            >
-              Regenerate
-            </button>
-            <button
-              className="btn-primary"
-              disabled={!planMarkdown.trim() || approvePlanM.isPending}
-              onClick={() => approvePlanM.mutate()}
-            >
-              Approve plan →
-            </button>
-          </div>
+          <StepActions step={step} onBack={goBack}>
+            {step === 'plan' && (
+              <button
+                className="btn-primary"
+                disabled={!planMarkdown.trim()}
+                onClick={() => saveStepM.mutate('review_plan')}
+              >
+                Continue to review →
+              </button>
+            )}
+            {step === 'review_plan' && (
+              <>
+                <button
+                  className="btn-secondary"
+                  disabled={generatePlanM.isPending}
+                  onClick={() => generatePlanM.mutate()}
+                >
+                  {generatePlanM.isPending ? 'Regenerating…' : 'Regenerate'}
+                </button>
+                <button
+                  className="btn-primary"
+                  disabled={!planMarkdown.trim() || approvePlanM.isPending}
+                  onClick={() => approvePlanM.mutate()}
+                >
+                  Approve plan →
+                </button>
+              </>
+            )}
+          </StepActions>
         </div>
       )}
 
@@ -323,13 +560,15 @@ export function WorkflowStepContent({
               Previous local changes were stashed before creating the branch.
             </p>
           )}
-          <button
-            className="btn-primary"
-            disabled={runAgentM.isPending}
-            onClick={() => runAgentM.mutate()}
-          >
-            {runAgentM.isPending ? 'Agent running…' : 'Run agent →'}
-          </button>
+          <StepActions step={step} onBack={goBack}>
+            <button
+              className="btn-primary"
+              disabled={runAgentM.isPending}
+              onClick={() => runAgentM.mutate()}
+            >
+              {runAgentM.isPending ? 'Agent running…' : 'Run agent →'}
+            </button>
+          </StepActions>
         </div>
       )}
 
@@ -338,7 +577,7 @@ export function WorkflowStepContent({
       )}
 
       {step === 'code_review' && detail.output && (
-        <div className="flex gap-2">
+        <StepActions step={step} onBack={goBack}>
           <button
             className="btn-primary"
             disabled={approveCodeM.isPending}
@@ -346,110 +585,187 @@ export function WorkflowStepContent({
           >
             Approve code →
           </button>
-        </div>
+        </StepActions>
       )}
 
       {step === 'deploy' && (
         <div className="card space-y-4 p-4">
           <p className="text-sm text-slate-600">
             Run the local Magento deployment pipeline inside the <strong>php-fpm</strong> Docker
-            container for <code className="font-mono text-xs">{project.name}</code>.
+            container for <code className="font-mono text-xs">{project.name}</code>. After deploy
+            succeeds, continue to the commit step to commit, push, and open a staging PR manually.
           </p>
           {!detail.applied && detail.output && (
             <p className="text-sm text-amber-700">
               Apply code changes in the review panel above before deploying.
             </p>
           )}
-          <button
-            className="btn-primary"
-            disabled={deployM.isPending}
-            onClick={() => deployM.mutate()}
-          >
-            {deployM.isPending ? 'Deploying…' : 'Run local deploy'}
-          </button>
 
-          {detail.deploy && (
+          {detail.deploy && !detail.deploy.running && (
             <div className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Deploy {detail.deploy.ok ? '✅' : '❌'}
+                Last deploy {detail.deploy.ok ? '✅' : '❌'}
               </h3>
-              {detail.deploy.steps.map((s) => (
-                <details key={s.key} className="rounded-md border border-slate-200">
-                  <summary className="cursor-pointer px-3 py-1.5 text-xs">
-                    <span
-                      className={
-                        s.skipped ? 'text-slate-400' : s.ok ? 'text-green-600' : 'text-red-600'
-                      }
-                    >
-                      {s.skipped ? '○' : s.ok ? '✓' : '✗'} {s.label}
-                    </span>
-                  </summary>
-                  <pre className="overflow-x-auto bg-slate-900 p-2 text-[11px] text-slate-200">
-                    {s.output}
-                  </pre>
-                </details>
-              ))}
+              <button
+                type="button"
+                className="text-xs font-medium text-brand-600 hover:underline"
+                onClick={() => {
+                  setDeployPhase(detail.deploy?.ok ? 'done' : 'failed');
+                  setDeployModalOpen(true);
+                }}
+              >
+                View deployment progress ↗
+              </button>
             </div>
           )}
 
-          <button
-            className="btn-primary"
-            disabled={!detail.deploy?.ok || completeDeployM.isPending}
-            onClick={() => completeDeployM.mutate()}
-          >
-            Continue to commit →
-          </button>
+          <StepActions step={step} onBack={goBack}>
+            <button
+              className="btn-primary"
+              disabled={pipelineRunning || deployM.isPending || !detail.applied}
+              onClick={() => void runDeployPipeline()}
+            >
+              {pipelineRunning || deployM.isPending || detail.deploy?.running
+                ? 'Deploying…'
+                : 'Run local deploy →'}
+            </button>
+          </StepActions>
+
+          <DeployProgressModal
+            open={deployModalOpen}
+            detail={detail}
+            phase={deployPhase}
+            error={deployModalError}
+            onClose={closeDeployModal}
+          />
         </div>
       )}
 
       {step === 'commit' && (
         <div className="card space-y-3 p-4">
           <p className="text-sm text-slate-600">
-            Use the panel above to apply, test, commit, and push. Then continue to Jira comment.
+            Local deploy completed. Use the commit, push, and staging PR actions in the review panel
+            above when you are ready, then continue to post the Jira comment.
           </p>
-          <div>
-            <label className="label">Commit message</label>
-            <input
-              className="input font-mono text-sm"
-              value={commitMessage}
-              onChange={(e) => setCommitMessage(e.target.value)}
-            />
-          </div>
-          <button className="btn-primary" onClick={() => onNavigate('jira_comment')}>
-            Continue to Jira comment →
-          </button>
+          {detail.git?.prUrl && (
+            <a
+              href={detail.git.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block text-sm font-medium text-brand-600 hover:underline"
+            >
+              View pull request ↗
+            </a>
+          )}
+          <StepActions step={step} onBack={goBack}>
+            <button
+              className="btn-primary"
+              disabled={!detail.git?.committed}
+              onClick={() => onNavigate('jira_comment')}
+            >
+              Continue to Jira comment →
+            </button>
+          </StepActions>
+          {!detail.git?.committed && (
+            <p className="text-xs text-slate-500">Commit your changes above before continuing.</p>
+          )}
         </div>
       )}
 
       {step === 'jira_comment' && (
         <div className="card space-y-4 p-4">
           <p className="text-sm text-slate-600">
-            Post a formatted summary comment to Jira ticket{' '}
+            Review and edit the comment below, then post it to Jira ticket{' '}
             <span className="font-mono">{run.jiraKey}</span>.
           </p>
           {wf.jiraCommentPostedAt ? (
-            <p className="text-sm text-green-700">Comment posted.</p>
+            <>
+              <p className="text-sm text-green-700">Comment posted.</p>
+              {wf.jiraCommentText && (
+                <div>
+                  <label className="label text-xs uppercase tracking-wide text-slate-500">
+                    Posted comment
+                  </label>
+                  <div className="max-h-80 overflow-y-auto rounded-md border border-green-100 bg-green-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap">
+                    {wf.jiraCommentText}
+                  </div>
+                </div>
+              )}
+              <StepActions step={step} onBack={goBack} />
+            </>
+          ) : jiraPreviewQ.isLoading ? (
+            <PlanGeneratingLoader label="Loading comment preview…" />
+          ) : jiraPreviewQ.isError ? (
+            <p className="text-sm text-red-600">{getApiErrorMessage(jiraPreviewQ.error)}</p>
           ) : (
-            <button
-              className="btn-primary"
-              disabled={!run.jiraKey || postJiraM.isPending}
-              onClick={() => postJiraM.mutate()}
-            >
-              Post Jira comment →
-            </button>
+            <>
+              <div>
+                <label className="label">Comment preview</label>
+                <textarea
+                  className="input min-h-[280px] font-mono text-xs"
+                  value={jiraCommentDraft}
+                  onChange={(e) => setJiraCommentDraft(e.target.value)}
+                  placeholder="Jira comment preview will appear here…"
+                />
+              </div>
+              <StepActions step={step} onBack={goBack}>
+                <button
+                  className="btn-primary"
+                  disabled={!run.jiraKey || !jiraCommentDraft.trim() || postJiraM.isPending}
+                  onClick={() => postJiraM.mutate(jiraCommentDraft.trim())}
+                >
+                  {postJiraM.isPending ? 'Posting…' : 'Post Jira comment →'}
+                </button>
+              </StepActions>
+            </>
           )}
         </div>
       )}
 
       {step === 'done' && (
-        <div className="card space-y-2 p-6 text-center">
-          <p className="text-lg font-semibold text-green-700">Workflow complete</p>
-          <p className="text-sm text-slate-500">
-            Task {run.jiraKey || wf.customTitle} — branch {run.branchName}
-          </p>
+        <div className="card space-y-4 p-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="badge bg-green-100 text-green-700">✓ Task complete</span>
+            <span className="font-mono text-sm text-brand-700">{run.jiraKey || wf.customTitle}</span>
+            {run.branchName && (
+              <>
+                <span className="text-slate-400">·</span>
+                <span className="font-mono text-sm text-slate-600">{run.branchName}</span>
+              </>
+            )}
+          </div>
+
+          {wf.jiraCommentText ? (
+            <div>
+              <label className="label text-xs uppercase tracking-wide text-slate-500">
+                Jira comment posted
+              </label>
+              <div className="max-h-80 overflow-y-auto rounded-md border border-green-100 bg-green-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap">
+                {wf.jiraCommentText}
+              </div>
+            </div>
+          ) : wf.jiraCommentPostedAt ? (
+            <p className="text-sm text-green-700">Jira comment posted successfully.</p>
+          ) : null}
+
           {wf.testPassRate && (
             <p className="text-sm text-slate-600">Tests: {wf.testPassRate}</p>
           )}
+
+          <div className="flex flex-wrap gap-2 pt-2">
+            <StepActions step={step} onBack={goBack}>
+              {onShowHistory && (
+                <button type="button" className="btn-secondary" onClick={onShowHistory}>
+                  View history grid →
+                </button>
+              )}
+              {onStartNewTask && (
+                <button type="button" className="btn-secondary" onClick={onStartNewTask}>
+                  Start new task
+                </button>
+              )}
+            </StepActions>
+          </div>
         </div>
       )}
     </div>
