@@ -30,3 +30,9 @@ export function canGoToStep(
   if (targetIdx <= currentIdx) return true;
   return completed.includes(target);
 }
+
+export function previousStep(step: TaskWorkflowStep): TaskWorkflowStep | null {
+  const idx = stepIndex(step);
+  if (idx <= 0) return null;
+  return WORKFLOW_STEPS[idx - 1]!.id;
+}

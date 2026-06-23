@@ -21,6 +21,7 @@ EMPTY_DETAIL = {
     "approvalStatus": "draft",
     "jiraCommentPostedAt": None,
     "jiraCommentId": None,
+    "jiraCommentText": None,
     "testPassRate": None,
 }
 

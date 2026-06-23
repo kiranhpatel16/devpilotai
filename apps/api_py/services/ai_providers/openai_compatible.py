@@ -2,6 +2,26 @@ import httpx
 from lib.errors import HttpError
 
 
+def _api_error_message(provider_id: str, resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, str) and err:
+                return f"{provider_id} API error: {err}"
+            if isinstance(err, dict) and err.get("message"):
+                return f'{provider_id} API error: {err["message"]}'
+            msg = data.get("message")
+            if isinstance(msg, str) and msg:
+                return f"{provider_id} API error: {msg}"
+    except Exception:
+        pass
+    snippet = resp.text.strip()[:240]
+    if snippet:
+        return f"{provider_id} request failed ({resp.status_code}): {snippet}"
+    return f"{provider_id} request failed ({resp.status_code})"
+
+
 def make_openai_compatible_adapter(provider_id: str, fallback_base_url: str):
     def _base(creds: dict) -> str:
         return (creds.get("baseUrl") or fallback_base_url).rstrip("/")
@@ -35,7 +55,7 @@ def make_openai_compatible_adapter(provider_id: str, fallback_base_url: str):
         if resp.status_code in (401, 403):
             raise HttpError(502, f"{provider_id} authentication failed. Check the API key.", "ai_auth_failed")
         if not resp.is_success:
-            raise HttpError(502, f"{provider_id} request failed ({resp.status_code})", "ai_error",
+            raise HttpError(502, _api_error_message(provider_id, resp), "ai_error",
                             {"body": resp.text[:600]})
 
         data = resp.json()

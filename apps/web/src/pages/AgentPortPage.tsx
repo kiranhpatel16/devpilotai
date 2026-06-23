@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AiProviderInfo,
   JiraBoard,
+  JiraIssueDetail,
   JiraTask,
   Project,
   RunDetail,
@@ -16,6 +17,7 @@ import { useAuth } from '../auth/AuthContext';
 import { TaskStepper } from '../components/task-workflow/TaskStepper';
 import { TaskHistoryGrid } from '../components/task-workflow/TaskHistoryGrid';
 import { WorkflowStepContent } from '../components/task-workflow/WorkflowStepContent';
+import { SelectedJiraTaskCard } from '../components/task-workflow/SelectedJiraTaskCard';
 
 interface ProjectDetail {
   project: Project;
@@ -45,6 +47,7 @@ export function AgentPortPage() {
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [scope, setScope] = useState<'mine' | 'all'>('mine');
   const [showHistory, setShowHistory] = useState(false);
+  const [historyJiraKey, setHistoryJiraKey] = useState<string | null>(null);
 
   const providersQ = useQuery({
     queryKey: ['ai-providers'],
@@ -75,6 +78,17 @@ export function AgentPortPage() {
       (await api.get<{ rows: TaskHistoryRow[] }>(`/workflow/history?projectId=${projectId}`))
         .data.rows,
     enabled: !!projectId && showHistory,
+  });
+
+  const selectedIssueQ = useQuery({
+    queryKey: ['jira-issue', projectId, selectedKey],
+    queryFn: async () =>
+      (
+        await api.get<{ issue: JiraIssueDetail }>(
+          `/projects/${projectId}/jira/issues/${selectedKey}`,
+        )
+      ).data.issue,
+    enabled: !!projectId && !!selectedKey && !custom,
   });
 
   const startWorkflowM = useMutation({
@@ -125,6 +139,12 @@ export function AgentPortPage() {
     setShowHistory(false);
   }
 
+  function openHistory(jiraKey?: string | null) {
+    setHistoryJiraKey(jiraKey ?? null);
+    setShowHistory(true);
+    queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
+  }
+
   function reset() {
     setSelectedKey(null);
     setCustom(false);
@@ -132,6 +152,7 @@ export function AgentPortPage() {
     setDetail(null);
     setError(null);
     setShowHistory(false);
+    setHistoryJiraKey(null);
   }
 
   function handleStartTask() {
@@ -176,20 +197,42 @@ export function AgentPortPage() {
           completedSteps={wf.completedSteps}
           onNavigate={(step) => navigateStepM.mutate(step)}
           showHistory={showHistory}
-          onShowHistory={() => setShowHistory(true)}
+          onShowHistory={() => openHistory()}
         />
       )}
 
       {showHistory && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Workflow history</h2>
-            <button className="btn-secondary" onClick={() => setShowHistory(false)}>
+            <h2 className="text-lg font-semibold">
+              Workflow history
+              {historyJiraKey && (
+                <span className="ml-2 font-mono text-sm font-normal text-brand-700">
+                  {historyJiraKey}
+                </span>
+              )}
+            </h2>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setShowHistory(false);
+                setHistoryJiraKey(null);
+              }}
+            >
               ← Back to task
             </button>
           </div>
           {historyQ.isLoading && <p className="text-sm text-slate-400">Loading…</p>}
-          {historyQ.data && <TaskHistoryGrid rows={historyQ.data} onRestore={handleRestore} />}
+          {historyQ.data && (
+            <TaskHistoryGrid
+              rows={
+                historyJiraKey
+                  ? historyQ.data.filter((row) => row.jiraKey === historyJiraKey)
+                  : historyQ.data
+              }
+              onRestore={handleRestore}
+            />
+          )}
         </div>
       )}
 
@@ -214,10 +257,7 @@ export function AgentPortPage() {
 
             <button
               className="btn-ghost w-full text-xs"
-              onClick={() => {
-                setShowHistory(true);
-                queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
-              }}
+              onClick={() => openHistory()}
             >
               View history
             </button>
@@ -395,14 +435,12 @@ export function AgentPortPage() {
                     />
                   </div>
                 ) : (
-                  <div>
-                    <span className="font-mono font-semibold text-brand-700">{selectedKey}</span>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {board?.groups
-                        .flatMap((g) => g.tasks)
-                        .find((t) => t.key === selectedKey)?.summary}
-                    </p>
-                  </div>
+                  <SelectedJiraTaskCard
+                    issue={selectedIssueQ.data}
+                    loading={selectedIssueQ.isLoading}
+                    error={selectedIssueQ.isError ? getApiErrorMessage(selectedIssueQ.error) : null}
+                    productionBranch={project.git.productionBranch}
+                  />
                 )}
                 <button
                   className="btn-primary"
@@ -428,6 +466,8 @@ export function AgentPortPage() {
                 providers={providers}
                 onChange={setDetail}
                 onNavigate={(step) => navigateStepM.mutate(step)}
+                onShowHistory={() => openHistory(detail.run.jiraKey)}
+                onStartNewTask={reset}
               />
             )}
           </section>

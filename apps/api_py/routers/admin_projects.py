@@ -129,7 +129,13 @@ async def create_project(body: CreateProjectBody, auth: dict = Depends(require_a
         "projectName": project["name"],
         "summary": f"{auth['username']} created project {project['name']}",
     })
-    return {"project": project}
+    return {
+        "project": {
+            **project,
+            "hasJiraToken": projects_repo.has_jira_token(project["id"]),
+            "hasGitToken": projects_repo.has_git_token(project["id"]),
+        },
+    }
 
 
 @router.put("/{project_id}")
@@ -181,7 +187,13 @@ async def update_project(project_id: str, body: UpdateProjectBody, auth: dict = 
         "projectName": project["name"],
         "summary": f"{auth['username']} updated project {project['name']}",
     })
-    return {"project": project}
+    return {
+        "project": {
+            **project,
+            "hasJiraToken": projects_repo.has_jira_token(project_id),
+            "hasGitToken": projects_repo.has_git_token(project_id),
+        },
+    }
 
 
 @router.delete("/{project_id}")
@@ -200,13 +212,27 @@ async def delete_project(project_id: str, auth: dict = Depends(require_admin)):
     return {"ok": True}
 
 
+class JiraTestBody(BaseModel):
+    baseUrl: Optional[str] = None
+    email: Optional[str] = None
+    apiToken: Optional[str] = None
+
+
 @router.post("/{project_id}/jira/test")
-async def test_jira(project_id: str, auth: dict = Depends(require_admin)):
+async def test_jira(
+    project_id: str,
+    body: JiraTestBody = JiraTestBody(),
+    auth: dict = Depends(require_admin),
+):
     if not projects_repo.find_by_id(project_id):
         raise HttpError.not_found("Project not found")
-    resolved = resolve_jira(project_id)
+    overrides = body.model_dump(exclude_unset=True)
+    resolved = resolve_jira(project_id, overrides or None)
     if not resolved:
-        raise HttpError.bad_request("Jira is not fully configured (need base URL, email, and API token)")
+        raise HttpError.bad_request(
+            "Jira is not fully configured (need base URL, email, and API token). "
+            "Enter credentials and click Save, or paste a token to test before saving."
+        )
     me = await test_connection(resolved["creds"])
     return {"ok": True, "accountId": me.get("accountId"), "displayName": me.get("displayName")}
 

@@ -1,6 +1,8 @@
 import os
 import shutil
 import subprocess
+from collections.abc import Awaitable, Callable
+from typing import Any
 from database import now_iso
 from services.docker_db import (
     DEFAULT_CONTAINER_WORKDIR,
@@ -90,14 +92,38 @@ def _build_runner(
     )
 
 
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+async def _emit_progress(
+    steps: list[dict],
+    on_progress: ProgressCallback | None,
+    *,
+    ok: bool = False,
+    running: bool = True,
+) -> None:
+    if not on_progress:
+        return
+    await on_progress({
+        "ranAt": now_iso(),
+        "ok": ok,
+        "running": running,
+        "steps": list(steps),
+    })
+
+
 async def run_local_deploy(
     cwd: str,
     php_bin: str = "php",
     docker_compose_path: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Run Magento local deployment inside php-fpm Docker when available."""
     runner = _build_runner(cwd, php_bin, docker_compose_path)
-    steps = []
+    steps: list[dict] = []
+
+    async def progress(ok: bool = False, running: bool = True) -> None:
+        await _emit_progress(steps, on_progress, ok=ok, running=running)
 
     if runner.uses_docker:
         steps.append({
@@ -107,6 +133,7 @@ async def run_local_deploy(
             "skipped": False,
             "output": runner.docker_target["label"],
         })
+        await progress()
     else:
         steps.append({
             "key": "docker_target",
@@ -118,7 +145,9 @@ async def run_local_deploy(
                 "Start Docker (docker compose up -d php-fpm) or set docker-compose path in My Environments."
             ),
         })
-        return {"ranAt": now_iso(), "ok": False, "steps": steps}
+        report = {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
+        await _emit_progress(steps, on_progress, ok=False, running=False)
+        return report
 
     has_composer_phar = await runner.path_exists("composer.phar")
     if has_composer_phar:
@@ -133,8 +162,9 @@ async def run_local_deploy(
             "skipped": False,
             "output": r["output"],
         })
+        await progress()
         if not r["ok"]:
-            return {"ranAt": now_iso(), "ok": False, "steps": steps}
+            return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
     elif not runner.uses_docker and shutil.which("composer"):
         r = await runner.run_argv(["composer", "install"], timeout=STEP_TIMEOUT_LONG)
         steps.append({
@@ -144,8 +174,9 @@ async def run_local_deploy(
             "skipped": False,
             "output": r["output"],
         })
+        await progress()
         if not r["ok"]:
-            return {"ranAt": now_iso(), "ok": False, "steps": steps}
+            return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
     else:
         r = await runner.run_shell(
             "command -v composer >/dev/null && composer install || "
@@ -159,8 +190,9 @@ async def run_local_deploy(
             "skipped": False,
             "output": r["output"],
         })
+        await progress()
         if not r["ok"]:
-            return {"ranAt": now_iso(), "ok": False, "steps": steps}
+            return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
 
     clear_cmd = (
         "rm -rf pub/static/frontend pub/static/adminhtml pub/static/_cache/* "
@@ -175,8 +207,9 @@ async def run_local_deploy(
         "skipped": False,
         "output": r["output"] or "Cleared.",
     })
+    await progress()
     if not r["ok"]:
-        return {"ranAt": now_iso(), "ok": False, "steps": steps}
+        return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
 
     has_magento = await runner.path_exists("bin/magento")
     if not has_magento:
@@ -187,7 +220,8 @@ async def run_local_deploy(
             "skipped": True,
             "output": f"bin/magento not found in container workdir ({runner.docker_target.get('workdir', DEFAULT_CONTAINER_WORKDIR)}).",
         })
-        return {"ranAt": now_iso(), "ok": False, "steps": steps}
+        await progress(ok=False, running=False)
+        return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
 
     magento_steps = [
         ("setup_upgrade", "setup:upgrade", ["bin/magento", "setup:upgrade"], STEP_TIMEOUT_LONG),
@@ -211,8 +245,9 @@ async def run_local_deploy(
             "skipped": False,
             "output": r["output"],
         })
+        await progress()
         if not r["ok"]:
-            return {"ranAt": now_iso(), "ok": False, "steps": steps}
+            return {"ranAt": now_iso(), "ok": False, "running": False, "steps": steps}
 
     chmod_cmd = "chmod -R 777 var/* generated/* pub/static/*"
     r = await runner.run_shell(chmod_cmd, timeout=120)
@@ -224,5 +259,8 @@ async def run_local_deploy(
         "output": r["output"] or "Permissions updated.",
     })
 
+    await progress()
     ok = all(s["ok"] or s["skipped"] for s in steps)
-    return {"ranAt": now_iso(), "ok": ok, "steps": steps}
+    report = {"ranAt": now_iso(), "ok": ok, "running": False, "steps": steps}
+    await _emit_progress(steps, on_progress, ok=ok, running=False)
+    return report

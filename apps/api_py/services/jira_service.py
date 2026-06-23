@@ -106,21 +106,28 @@ def _map_task(base_url: str, issue: dict) -> dict:
     }
 
 
-def resolve_jira(project_id: str) -> dict | None:
+def resolve_jira(project_id: str, overrides: dict | None = None) -> dict | None:
     project = projects_repo.find_by_id(project_id)
     if not project:
         raise HttpError.not_found("Project not found")
-    token_enc = projects_repo.get_jira_token_enc(project_id)
-    if not project["jira"]["baseUrl"] or not project["jira"]["email"] or not token_enc:
-        return None
-    api_token = decrypt_secret(token_enc)
+
+    overrides = overrides or {}
+    base_url = (overrides.get("baseUrl") or project["jira"]["baseUrl"] or "").strip() or None
+    email = (overrides.get("email") or project["jira"]["email"] or "").strip() or None
+
+    api_token = overrides.get("apiToken")
     if not api_token:
+        token_enc = projects_repo.get_jira_token_enc(project_id)
+        if token_enc:
+            api_token = decrypt_secret(token_enc)
+
+    if not base_url or not email or not api_token:
         return None
     return {
         "project": project,
         "creds": {
-            "baseUrl": project["jira"]["baseUrl"],
-            "email": project["jira"]["email"],
+            "baseUrl": base_url,
+            "email": email,
             "apiToken": api_token,
         },
     }

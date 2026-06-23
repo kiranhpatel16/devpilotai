@@ -163,6 +163,10 @@ function ProjectModal({
   onSaved: () => void;
 }) {
   const [form, setForm] = useState<FormState>(toForm(project));
+  const [tokenFlags, setTokenFlags] = useState({
+    hasGitToken: project?.hasGitToken ?? false,
+    hasJiraToken: project?.hasJiraToken ?? false,
+  });
   const [error, setError] = useState<string | null>(null);
   const [jiraTest, setJiraTest] = useState<string | null>(null);
   const [gitTest, setGitTest] = useState<string | null>(null);
@@ -180,7 +184,13 @@ function ProjectModal({
 
   const jiraTestMutation = useMutation({
     mutationFn: async () =>
-      (await api.post(`/admin/projects/${project!.id}/jira/test`, {})).data,
+      (
+        await api.post(`/admin/projects/${project!.id}/jira/test`, {
+          baseUrl: form.jiraBaseUrl || null,
+          email: form.jiraEmail || null,
+          ...(form.jiraApiToken ? { apiToken: form.jiraApiToken } : {}),
+        })
+      ).data,
     onMutate: () => {
       setJiraTest(null);
       setError(null);
@@ -263,7 +273,17 @@ function ProjectModal({
       project
         ? api.put(`/admin/projects/${project.id}`, payload())
         : api.post('/admin/projects', payload()),
-    onSuccess: onSaved,
+    onSuccess: (res) => {
+      const saved = res.data?.project as ProjectWithCount | undefined;
+      if (saved) {
+        setTokenFlags({
+          hasGitToken: !!saved.hasGitToken,
+          hasJiraToken: !!saved.hasJiraToken,
+        });
+        setForm((f) => ({ ...f, gitApiToken: '', jiraApiToken: '' }));
+      }
+      onSaved();
+    },
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
@@ -419,13 +439,16 @@ function ProjectModal({
                 className="input"
                 type="password"
                 placeholder={
-                  project?.hasGitToken
+                  tokenFlags.hasGitToken
                     ? '•••••• (leave blank to keep saved token)'
                     : 'Paste Bitbucket App Password (required)'
                 }
                 value={form.gitApiToken}
                 onChange={(e) => set('gitApiToken', e.target.value)}
               />
+              {tokenFlags.hasGitToken && (
+                <p className="mt-1 text-xs text-green-700">Git token saved for this project.</p>
+              )}
               <p className="mt-1 text-xs text-slate-400">
                 Bitbucket: App Password with Pull requests write. GitHub: PAT with repo scope.
               </p>
@@ -459,11 +482,14 @@ function ProjectModal({
                 className="input"
                 type="password"
                 placeholder={
-                  project?.hasJiraToken ? '•••••• (leave blank to keep)' : 'Paste API token'
+                  tokenFlags.hasJiraToken ? '•••••• (leave blank to keep)' : 'Paste API token'
                 }
                 value={form.jiraApiToken}
                 onChange={(e) => set('jiraApiToken', e.target.value)}
               />
+              {tokenFlags.hasJiraToken && (
+                <p className="mt-1 text-xs text-green-700">Jira token saved for this project.</p>
+              )}
             </Field>
           </div>
           {error && (
@@ -502,7 +528,7 @@ function ProjectModal({
                   className="btn-secondary mr-auto"
                   disabled={gitTestMutation.isPending}
                   onClick={() => gitTestMutation.mutate()}
-                  title="Tests with form values; save first to persist token"
+                  title="Uses form values; saved project token is used when the field is left blank"
                 >
                   {gitTestMutation.isPending ? 'Testing…' : 'Test Git / PR'}
                 </button>
@@ -510,7 +536,7 @@ function ProjectModal({
                   className="btn-secondary"
                   disabled={jiraTestMutation.isPending}
                   onClick={() => jiraTestMutation.mutate()}
-                  title="Save credentials first, then test"
+                  title="Uses form values; saved project token is used when the field is left blank"
                 >
                   {jiraTestMutation.isPending ? 'Testing…' : 'Test Jira'}
                 </button>

@@ -33,6 +33,14 @@ def get_adapter(provider_id: str) -> dict:
     return adapter
 
 
+def _effective_models(provider_id: str, entry: dict, setting: dict | None) -> list[str]:
+    if provider_id in PROVIDER_CATALOG and setting:
+        override = setting.get("extra", {}).get("models")
+        if isinstance(override, list) and override:
+            return [str(m) for m in override if str(m).strip()]
+    return entry["models"]
+
+
 def _catalog_entry(provider_id: str) -> dict | None:
     if provider_id in PROVIDER_CATALOG:
         return PROVIDER_CATALOG[provider_id]
@@ -60,21 +68,93 @@ def resolve_creds(provider_id: str, model_override: str | None = None) -> dict:
             f'Provider "{provider_id}" is not enabled. Configure it in Admin → AI Providers.',
             "provider_disabled",
         )
-    api_key = decrypt_secret(setting["apiKeyEnc"]) if setting["apiKeyEnc"] else None
+    return _build_resolved_creds(provider_id, entry, setting, model_override=model_override)
+
+
+def resolve_creds_for_test(provider_id: str, overrides: dict | None = None) -> dict:
+    """Resolve credentials for admin test — does not require enabled; accepts form overrides."""
+    entry = _catalog_entry(provider_id)
+    if not entry:
+        raise HttpError.not_found(f'Unknown provider: {provider_id}')
+    setting = ai_settings_repo.get(provider_id)
+    return _build_resolved_creds(provider_id, entry, setting, overrides=overrides)
+
+
+def _build_resolved_creds(
+    provider_id: str,
+    entry: dict,
+    setting: dict | None,
+    overrides: dict | None = None,
+    model_override: str | None = None,
+) -> dict:
+    overrides = overrides or {}
+
+    api_key = overrides.get("apiKey")
+    if not api_key:
+        enc = setting["apiKeyEnc"] if setting else None
+        api_key = decrypt_secret(enc) if enc else None
     if not api_key:
         raise HttpError.bad_request(
-            f'Provider "{provider_id}" has no valid API key.', "provider_no_key"
+            f'Provider "{provider_id}" has no valid API key. Paste a key and Save, or enter one to test first.',
+            "provider_no_key",
         )
-    model = model_override or setting["defaultModel"] or entry["defaultModel"]
+
+    base_url = overrides["baseUrl"] if "baseUrl" in overrides else (setting["baseUrl"] if setting else None)
+    default_model = (
+        overrides.get("defaultModel")
+        or (setting["defaultModel"] if setting else None)
+        or entry["defaultModel"]
+    )
+    model = model_override or default_model
     return {
         "creds": {
             "apiKey": api_key,
-            "baseUrl": setting["baseUrl"],
-            "defaultModel": setting["defaultModel"] or entry["defaultModel"],
-            "extra": setting["extra"],
+            "baseUrl": base_url,
+            "defaultModel": default_model,
+            "extra": setting["extra"] if setting else {},
         },
         "model": model,
     }
+
+
+def validate_endpoint_models(provider_id: str, creds: dict, setting: dict | None) -> None:
+    """Warn when custom models are sent to a built-in provider's default API host."""
+    if provider_id not in PROVIDER_CATALOG:
+        return
+    entry = _catalog_entry(provider_id)
+    if not entry:
+        return
+
+    native_base = PROVIDER_CATALOG[provider_id].get("defaultBaseUrl")
+    if not native_base:
+        return
+
+    active_base = (creds.get("baseUrl") or native_base).rstrip("/")
+    if active_base != native_base.rstrip("/"):
+        return
+
+    catalog_models = set(PROVIDER_CATALOG[provider_id]["models"])
+    effective = _effective_models(provider_id, entry, setting)
+    if all(m in catalog_models for m in effective):
+        return
+
+    model = creds.get("defaultModel") or entry["defaultModel"]
+    hints = {
+        "grok": (
+            "These models look like Groq/Llama IDs. Set Base URL to "
+            "https://api.groq.com/openai/v1 and use your Groq API key, "
+            "or switch to xAI models such as grok-2."
+        ),
+        "openai": "Set Base URL to your OpenAI-compatible API host if using third-party models.",
+    }
+    hint = hints.get(
+        provider_id,
+        "Set Base URL to the API host that supports these models.",
+    )
+    raise HttpError.bad_request(
+        f'Model "{model}" is not available at the default {entry["label"]} endpoint ({native_base}). {hint}',
+        "provider_model_mismatch",
+    )
 
 
 def list_provider_info() -> list[dict]:
@@ -90,15 +170,20 @@ def list_provider_info() -> list[dict]:
             continue
         setting = ai_settings_repo.get(pid)
         available = pid in ADAPTERS or custom_ai_providers_repo.find_by_id(pid) is not None
+        is_custom = custom_ai_providers_repo.find_by_id(pid) is not None
+        models = _effective_models(pid, entry, setting)
         result.append({
             "id": pid,
             "label": entry["label"],
             "enabled": bool(setting and setting["enabled"]) and available,
             "configured": bool(setting and setting["apiKeyEnc"]) and available,
             "defaultModel": (setting["defaultModel"] if setting else None) or entry["defaultModel"],
-            "models": entry["models"],
+            "baseUrl": setting["baseUrl"] if setting else None,
+            "defaultBaseUrl": entry.get("defaultBaseUrl"),
+            "models": models,
             "supportsAgent": entry["supportsAgent"] and available,
-            "custom": entry.get("custom", False),
+            "custom": entry.get("custom", False) or is_custom,
+            "deletable": is_custom,
         })
     return result
 

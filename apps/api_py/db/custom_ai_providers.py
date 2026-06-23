@@ -46,6 +46,34 @@ class _CustomAiProvidersRepo:
         db.commit()
         return self.find_by_id(pid)
 
+    def update(self, provider_id: str, input: dict) -> dict | None:
+        existing = self.find_by_id(provider_id)
+        if not existing:
+            return None
+        updates: list[str] = []
+        params: list = []
+        if "label" in input:
+            updates.append("label = ?")
+            params.append(input["label"])
+        if "defaultBaseUrl" in input:
+            updates.append("default_base_url = ?")
+            params.append(input["defaultBaseUrl"])
+        if "models" in input:
+            updates.append("models_json = ?")
+            params.append(json.dumps(input["models"]))
+        if not updates:
+            return existing
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(provider_id)
+        db = get_db()
+        db.execute(
+            f"UPDATE custom_ai_providers SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        db.commit()
+        return self.find_by_id(provider_id)
+
     def delete(self, provider_id: str) -> bool:
         db = get_db()
         cur = db.execute("DELETE FROM custom_ai_providers WHERE id = ?", (provider_id,))

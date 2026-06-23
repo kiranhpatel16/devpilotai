@@ -51,6 +51,7 @@ def empty_workflow_state() -> dict:
         "approvalStatus": "draft",
         "jiraCommentPostedAt": None,
         "jiraCommentId": None,
+        "jiraCommentText": None,
         "testPassRate": None,
     }
 
@@ -68,6 +69,7 @@ def extract_workflow(detail: dict) -> dict:
         "approvalStatus": detail.get("approvalStatus") or "draft",
         "jiraCommentPostedAt": detail.get("jiraCommentPostedAt"),
         "jiraCommentId": detail.get("jiraCommentId"),
+        "jiraCommentText": detail.get("jiraCommentText"),
         "testPassRate": detail.get("testPassRate"),
     }
 
