@@ -1,0 +1,4 @@
+cd /var/www/html/cpwork
+npm install          # already done
+npm run seed:admin   # already done -> admin / ChangeMe123!
+npm run dev          # starts API (3000) + web (5173)

@@ -1,0 +1,35 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+.DS_Store
+coverage/
+
+# CPWork data (local database + run artifacts)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/runs/
+data/task-plans/
+
+# Editor
+.vscode/
+.idea/
+
+
+# Python Virtual Environment
+.venv/
+venv/
+.env/
+ENV/
+
+__pycache__/
+
+__init__.py
+__init__.py
+__init__.py
+__init__.py
+__init__.py
