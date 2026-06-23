@@ -99,7 +99,7 @@ export function AppLayout() {
           {/* Logo + desktop nav */}
           <div className="flex items-center gap-4 md:gap-6">
             <span className="text-lg font-bold text-brand-700 dark:text-brand-400 shrink-0">
-              CPWork
+              DevPilot AI
             </span>
             <nav className="hidden md:flex items-center gap-1 flex-wrap">
               {navLinks}

@@ -9,9 +9,9 @@
   ],
   "scripts": {
     "dev:api": "source .venv/bin/activate && python3 apps/api_py/main.py",
-    "dev:web": "npm run dev --workspace @cpwork/web",
+    "dev:web": "npm run build:shared && npm run dev --workspace @cpwork/web",
     "dev": "concurrently -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
-    "build:web": "npm run build --workspace @cpwork/web",
+    "build:web": "npm run build:shared && npm run build --workspace @cpwork/web",
     "build": "npm run build:web",
     "seed:admin": "python3 apps/api_py/scripts/seed_admin.py",
     "setup": "bash setup.sh",

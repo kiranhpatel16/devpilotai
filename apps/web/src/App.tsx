@@ -22,7 +22,7 @@ function FullScreen({ children }: { children: React.ReactNode }) {
 export default function App() {
   const { session, loading } = useAuth();
 
-  if (loading) return <FullScreen>Loading CPWork…</FullScreen>;
+  if (loading) return <FullScreen>Loading DevPilot AI…</FullScreen>;
 
   if (!session) {
     return (

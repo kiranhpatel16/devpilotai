@@ -74,6 +74,9 @@ if command -v node &>/dev/null; then
   info "Installing npm dependencies..."
   npm install --silent
   info "npm dependencies installed."
+  info "Building shared package..."
+  npm run build:shared --silent
+  info "Shared package built."
 else
   warn "node not found — frontend will not be available. Install Node.js >= 20 to run the web UI."
 fi
