@@ -1,4 +1,5 @@
-cd /var/www/html/cpwork
-npm install          # already done
-npm run seed:admin   # already done -> admin / ChangeMe123!
-npm run dev          # starts API (3000) + web (5173)
+cd /var/www/html/devpilotai
+./setup.sh           # first time only
+./start.sh           # API (3000) + web (5173) in one terminal
+
+# or: npm start / npm run dev
