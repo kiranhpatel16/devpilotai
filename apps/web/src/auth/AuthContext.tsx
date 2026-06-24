@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { AuthSession } from '@cpwork/shared';
-import { api, getApiErrorMessage } from '../lib/api';
+import { api, getApiErrorMessage, QUICK_TIMEOUT_MS } from '../lib/api';
 
 interface AuthContextValue {
   session: AuthSession | null;
@@ -26,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function refresh() {
     try {
-      const { data } = await api.get<AuthSession>('/auth/me');
+      const { data } = await api.get<AuthSession>('/auth/me', { timeout: QUICK_TIMEOUT_MS });
       setSession(data);
     } catch {
       setSession(null);
@@ -36,13 +36,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    void refresh();
+    const safety = window.setTimeout(() => setLoading(false), 6_000);
+    void refresh().finally(() => window.clearTimeout(safety));
+    return () => window.clearTimeout(safety);
   }, []);
 
   async function login(username: string, password: string) {
     try {
       const { data } = await api.post<AuthSession>('/auth/login', { username, password });
       setSession(data);
+      setLoading(false);
     } catch (err) {
       throw new Error(getApiErrorMessage(err));
     }

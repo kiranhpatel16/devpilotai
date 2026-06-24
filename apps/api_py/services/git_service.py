@@ -249,6 +249,30 @@ async def commit_all(cwd: str, message: str) -> str:
     return result.hexsha
 
 
+async def get_recent_commits(cwd: str, branch: str | None = None, limit: int = 10) -> list[dict]:
+    if not GIT_AVAILABLE:
+        return []
+    from datetime import datetime, timezone
+    try:
+        repo = gitlib.Repo(cwd)
+        ref = branch or (repo.active_branch.name if not repo.head.is_detached else "HEAD")
+        commits = []
+        for c in repo.iter_commits(ref, max_count=limit):
+            committed = datetime.fromtimestamp(c.committed_date, tz=timezone.utc)
+            commits.append({
+                "hash": c.hexsha[:7],
+                "fullHash": c.hexsha,
+                "message": c.summary,
+                "author": c.author.name if c.author else None,
+                "when": committed.isoformat(),
+                "added": c.stats.total.get("insertions", 0) if c.stats else 0,
+                "removed": c.stats.total.get("deletions", 0) if c.stats else 0,
+            })
+        return commits
+    except Exception:
+        return []
+
+
 async def push_branch(cwd: str, branch: str, remote: str = "origin") -> None:
     if not GIT_AVAILABLE:
         raise HttpError(500, "GitPython not installed", "git_unavailable")

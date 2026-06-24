@@ -40,6 +40,8 @@ class DefaultsInput(BaseModel):
     backendUrl: Optional[str] = None
     dockerComposePath: Optional[str] = None
     dockerPatchId: Optional[str] = None
+    deployProfile: Optional[str] = None
+    deploySkipComposer: Optional[bool] = None
 
 
 class GitInput(BaseModel):

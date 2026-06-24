@@ -1,9 +1,18 @@
 import axios from 'axios';
 
+/** Fast-fail when the API is unresponsive (auth, health checks). */
+export const QUICK_TIMEOUT_MS = 8_000;
+
+/** AI agents, plan generation, deploy, and other long backend work. */
+export const LONG_TIMEOUT_MS = 600_000;
+
 export const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
 });
+
+/** Pass as the third argument to axios calls that may run for minutes. */
+export const longRequest = { timeout: LONG_TIMEOUT_MS };
 
 export interface ApiErrorShape {
   error: string;

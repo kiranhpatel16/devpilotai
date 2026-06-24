@@ -84,6 +84,39 @@ class _RunUsageRepo:
         )
         db.commit()
 
+    def total_tokens_for_user(self, user_id: str) -> dict:
+        row = get_db().execute(
+            """SELECT COALESCE(SUM(u.input_tokens), 0) AS inp,
+                      COALESCE(SUM(u.output_tokens), 0) AS outp
+               FROM run_ai_usage u
+               JOIN runs r ON r.id = u.run_id
+               WHERE r.user_id = ?""",
+            (user_id,),
+        ).fetchone()
+        return {"input": row["inp"] or 0, "output": row["outp"] or 0}
+
+    def total_tokens_all(self) -> dict:
+        row = get_db().execute(
+            """SELECT COALESCE(SUM(input_tokens), 0) AS inp,
+                      COALESCE(SUM(output_tokens), 0) AS outp
+               FROM run_ai_usage""",
+        ).fetchone()
+        return {"input": row["inp"] or 0, "output": row["outp"] or 0}
+
+    def daily_activity(self, days: int = 7) -> list[dict]:
+        rows = get_db().execute(
+            """SELECT date(created_at) AS day,
+                      COUNT(DISTINCT run_id) AS runs,
+                      COALESCE(SUM(input_tokens), 0) AS inp,
+                      COALESCE(SUM(output_tokens), 0) AS outp
+               FROM run_ai_usage
+               WHERE created_at >= datetime('now', ?)
+               GROUP BY date(created_at)
+               ORDER BY day ASC""",
+            (f"-{days} days",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
 ai_settings_repo = _AiSettingsRepo()
 run_usage_repo = _RunUsageRepo()

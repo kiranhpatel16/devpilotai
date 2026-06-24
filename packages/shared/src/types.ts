@@ -54,6 +54,10 @@ export interface ProjectDefaults {
   backendUrl: string | null;
   dockerComposePath: string | null;
   dockerPatchId: string | null;
+  /** auto = detect from changed files; light | standard | full = always use that profile */
+  deployProfile?: import('./deployProfile.js').DeployProfileMode;
+  /** When true, never run composer install during local deploy */
+  deploySkipComposer?: boolean;
 }
 
 export interface ProjectGitConfig {
@@ -151,6 +155,11 @@ export type RunStatus =
   | 'commit_ready'
   | 'pushing'
   | 'pr_creating'
+  | 'deploying'
+  | 'deploy_ready'
+  | 'deploy_failed'
+  | 'paused'
+  | 'cancelled'
   | 'done'
   | 'rejected'
   | 'failed';
@@ -360,6 +369,12 @@ export interface TestReport {
   error?: string | null;
   /** Parsed diagnosis when a deploy fails (workflow deploy step). */
   analysis?: DeployFailureAnalysis | null;
+  /** Step key currently executing (deploy progress). */
+  runningStep?: string | null;
+  /** Resolved deploy profile for this run. */
+  profile?: import('./deployProfile.js').DeployProfile | null;
+  /** Human-readable reason the profile was chosen. */
+  profileReason?: string | null;
 }
 
 // ----- Git -----
@@ -374,9 +389,20 @@ export interface GitInfo {
   committed: boolean;
   pushed: boolean;
   commitMessage: string | null;
+  lastCommitSha?: string | null;
   prUrl: string | null;
   /** True when local changes were stashed before creating the workflow branch. */
   stashed?: boolean;
+}
+
+export interface GitCommitRow {
+  hash: string;
+  fullHash: string;
+  message: string;
+  author: string | null;
+  when: string;
+  added: number;
+  removed: number;
 }
 
 // ----- Run detail (assembled view) -----

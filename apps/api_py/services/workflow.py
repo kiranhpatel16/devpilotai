@@ -30,6 +30,14 @@ STEP_LABELS = {
     "done": "Done",
 }
 
+AGENT_PROGRESS_STEPS = [
+    "Analyzing requirements",
+    "Scanning codebase",
+    "Generating file changes",
+    "Validating diffs",
+    "Preparing summary",
+]
+
 
 def step_index(step: str) -> int:
     try:
