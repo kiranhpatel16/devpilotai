@@ -1,9 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Project } from '@cpwork/shared';
-import { api, getApiErrorMessage } from '../../lib/api';
+import { api } from '../../lib/api';
 import { ConfirmDeleteModal } from '../../components/ConfirmDeleteModal';
+import {
+  ProjectSettingsForm,
+  type ProjectWithMeta,
+} from '../../components/workspace/ProjectSettingsForm';
 
 type ProjectWithCount = Project & {
   userCount: number;
@@ -11,34 +15,6 @@ type ProjectWithCount = Project & {
   hasGitToken?: boolean;
   hasCustomAiRules?: boolean;
 };
-
-const emptyForm = {
-  name: '',
-  slug: '',
-  description: '',
-  frontendTheme: '',
-  defaultProjectRoot: '',
-  defaultFrontendUrl: '',
-  defaultBackendUrl: '',
-  productionBranch: 'production',
-  stagingBranch: 'staging',
-  prTargetBranch: 'staging',
-  prProvider: '' as '' | 'github' | 'bitbucket',
-  repoOwner: '',
-  repoName: '',
-  gitApiUsername: '',
-  gitApiToken: '',
-  jiraBaseUrl: '',
-  jiraProjectKey: '',
-  jiraEmail: '',
-  jiraApiToken: '',
-};
-
-type FormState = typeof emptyForm;
-import {
-  ProjectSettingsForm,
-  type ProjectWithMeta,
-} from '../../components/workspace/ProjectSettingsForm';
 
 export function AdminProjectsPage() {
   const qc = useQueryClient();
@@ -73,7 +49,7 @@ export function AdminProjectsPage() {
           Project <strong>{aiRulesNotice.name}</strong> saved. It is using{' '}
           <strong>system default AI rules</strong>.{' '}
           <Link
-            to={`/admin/ai-rules?project=${aiRulesNotice.projectId}`}
+            to={`/settings/ai-rules?project=${aiRulesNotice.projectId}`}
             className="font-medium text-brand-700 underline"
           >
             Add custom AI rules
@@ -114,14 +90,14 @@ export function AdminProjectsPage() {
                 <td className="px-4 py-2">
                   {p.hasCustomAiRules ? (
                     <Link
-                      to={`/admin/ai-rules?project=${p.id}`}
+                      to={`/settings/ai-rules?project=${p.id}`}
                       className="text-green-700 hover:underline"
                     >
                       Custom
                     </Link>
                   ) : (
                     <Link
-                      to={`/admin/ai-rules?project=${p.id}`}
+                      to={`/settings/ai-rules?project=${p.id}`}
                       className="text-slate-400 hover:underline"
                     >
                       Defaults
@@ -192,135 +168,6 @@ function ProjectModal({
   onClose: () => void;
   onSaved: (project?: ProjectWithCount) => void;
 }) {
-  const [form, setForm] = useState<FormState>(toForm(project));
-  const [tokenFlags, setTokenFlags] = useState({
-    hasGitToken: project?.hasGitToken ?? false,
-    hasJiraToken: project?.hasJiraToken ?? false,
-  });
-  const [error, setError] = useState<string | null>(null);
-  const [jiraTest, setJiraTest] = useState<string | null>(null);
-  const [gitTest, setGitTest] = useState<string | null>(null);
-
-  // Detect themes on disk for the existing project (admin's checkout).
-  const themesQ = useQuery({
-    queryKey: ['admin', 'project-themes', project?.id],
-    queryFn: async () =>
-      (await api.get<{ themes: string[]; scannedPath: string | null }>(
-        `/admin/projects/${project!.id}/themes`,
-      )).data,
-    enabled: !!project,
-  });
-  const detectedThemes = themesQ.data?.themes ?? [];
-
-  const jiraTestMutation = useMutation({
-    mutationFn: async () =>
-      (
-        await api.post(`/admin/projects/${project!.id}/jira/test`, {
-          baseUrl: form.jiraBaseUrl || null,
-          email: form.jiraEmail || null,
-          ...(form.jiraApiToken ? { apiToken: form.jiraApiToken } : {}),
-        })
-      ).data,
-    onMutate: () => {
-      setJiraTest(null);
-      setError(null);
-    },
-    onSuccess: (data: { displayName?: string }) =>
-      setJiraTest(`Connected as ${data.displayName ?? 'Jira user'} ✓`),
-    onError: (err) => setJiraTest(`✗ ${getApiErrorMessage(err)}`),
-  });
-
-  const gitTestMutation = useMutation({
-    mutationFn: async () =>
-      (
-        await api.post(`/admin/projects/${project!.id}/git/test`, {
-          prProvider: form.prProvider || null,
-          repoOwner: form.repoOwner || null,
-          repoName: form.repoName || null,
-          apiUsername: form.gitApiUsername || null,
-          ...(form.gitApiToken ? { apiToken: form.gitApiToken } : {}),
-        })
-      ).data,
-    onMutate: () => {
-      setGitTest(null);
-      setError(null);
-    },
-    onSuccess: (data: { fullName?: string; provider?: string }) =>
-      setGitTest(`Connected to ${data.fullName ?? 'repository'} (${data.provider}) ✓`),
-    onError: (err) => setGitTest(`✗ ${getApiErrorMessage(err)}`),
-  });
-
-  const gitDetectMutation = useMutation({
-    mutationFn: async () =>
-      (
-        await api.get<{ detected: { owner: string; name: string; provider: string } }>(
-          `/admin/projects/${project!.id}/git/detect`,
-        )
-      ).data,
-    onSuccess: (data) => {
-      setForm((f) => ({
-        ...f,
-        prProvider: (data.detected.provider as 'github' | 'bitbucket') || f.prProvider,
-        repoOwner: data.detected.owner,
-        repoName: data.detected.name,
-      }));
-      setGitTest(`Detected ${data.detected.owner}/${data.detected.name} from git remote`);
-    },
-    onError: (err) => setGitTest(`✗ ${getApiErrorMessage(err)}`),
-  });
-
-  const payload = () => ({
-    name: form.name,
-    slug: form.slug,
-    description: form.description || null,
-    frontendTheme: form.frontendTheme || null,
-    defaults: {
-      projectRoot: form.defaultProjectRoot,
-      frontendUrl: form.defaultFrontendUrl || null,
-      backendUrl: form.defaultBackendUrl || null,
-    },
-    git: {
-      productionBranch: form.productionBranch,
-      stagingBranch: form.stagingBranch,
-      prTargetBranch: form.prTargetBranch,
-      prProvider: form.prProvider || null,
-      repoOwner: form.repoOwner || null,
-      repoName: form.repoName || null,
-      apiUsername: form.gitApiUsername || null,
-      ...(form.gitApiToken ? { apiToken: form.gitApiToken } : {}),
-    },
-    jira: {
-      baseUrl: form.jiraBaseUrl || null,
-      projectKey: form.jiraProjectKey || null,
-      email: form.jiraEmail || null,
-      // Only send the token when the admin typed a new one.
-      ...(form.jiraApiToken ? { apiToken: form.jiraApiToken } : {}),
-    },
-  });
-
-  const mutation = useMutation({
-    mutationFn: async () =>
-      project
-        ? api.put(`/admin/projects/${project.id}`, payload())
-        : api.post('/admin/projects', payload()),
-    onSuccess: (res) => {
-      const saved = res.data?.project as ProjectWithCount | undefined;
-      if (saved) {
-        setTokenFlags({
-          hasGitToken: !!saved.hasGitToken,
-          hasJiraToken: !!saved.hasJiraToken,
-        });
-        setForm((f) => ({ ...f, gitApiToken: '', jiraApiToken: '' }));
-      }
-      onSaved(saved);
-    },
-    onError: (err) => setError(getApiErrorMessage(err)),
-  });
-
-  function set<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-2xl">
@@ -336,7 +183,7 @@ function ProjectModal({
               project={project}
               showHeader={false}
               embedded
-              onSaved={() => onSaved()}
+              onSaved={(saved) => onSaved(saved as ProjectWithCount)}
             />
           </div>
         </div>

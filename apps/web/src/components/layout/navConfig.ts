@@ -10,6 +10,7 @@ import {
   Users,
   Cpu,
   FolderGit2,
+  Bot,
 } from 'lucide-react';
 
 export interface NavItem {
@@ -48,6 +49,7 @@ export const FOOTER_NAV: NavItem[] = [
   { label: 'Reports', to: '/reports', icon: BarChart3 },
   { label: 'Users', to: '/settings/users', icon: Users, adminOnly: true },
   { label: 'AI Providers', to: '/settings/ai-providers', icon: Cpu, adminOnly: true },
+  { label: 'AI Rules', to: '/settings/ai-rules', icon: Bot, adminOnly: true },
   { label: 'Projects', to: '/settings/projects', icon: FolderGit2, adminOnly: true },
 ];
 
