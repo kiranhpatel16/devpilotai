@@ -51,10 +51,10 @@ export default function App() {
           path="/workspaces/:projectId/tasks/:taskKey"
           element={<TaskExecutionCenterPage />}
         />
-        <Route path="/tasks" element={<TasksPage />} />
+        <Route path="/tasks/history" element={<TaskHistoryPage />} />
         <Route path="/tasks/custom" element={<CustomTasksPage />} />
         <Route path="/tasks/incidents" element={<IncidentsPage />} />
-        <Route path="/tasks/history" element={<TaskHistoryPage />} />
+        <Route path="/tasks" element={<TasksPage />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/knowledge" element={<KnowledgePage />} />
         <Route path="/knowledge/rules" element={<KnowledgePage />} />
