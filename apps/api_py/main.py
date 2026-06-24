@@ -23,6 +23,13 @@ from routers.jira import router as jira_router
 from routers.ai import router as ai_router
 from routers.runs import router as runs_router
 from routers.workflow import router as workflow_router
+from routers.dashboard import router as dashboard_router
+from routers.reports import router as reports_router
+from routers.agents import router as agents_router
+from routers.chat import router as chat_router
+from routers.deployments import router as deployments_router
+from routers.knowledge import router as knowledge_router
+from routers.usage import router as usage_router
 
 # Initialise DB on startup
 get_db()
@@ -82,6 +89,13 @@ app.include_router(jira_router)
 app.include_router(projects_router)
 app.include_router(workflow_router)
 app.include_router(runs_router)
+app.include_router(dashboard_router)
+app.include_router(reports_router)
+app.include_router(agents_router)
+app.include_router(chat_router)
+app.include_router(deployments_router)
+app.include_router(knowledge_router)
+app.include_router(usage_router)
 
 
 if __name__ == "__main__":

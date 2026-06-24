@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { RunDetail } from '@cpwork/shared';
-import { api, getApiErrorCode, getApiErrorMessage } from '../lib/api';
+import { api, getApiErrorCode, getApiErrorMessage, longRequest } from '../lib/api';
 import { DiffView } from './DiffView';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -40,11 +40,16 @@ export function RunPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.id, output?.summary, detail.diffs.length]);
 
-  function useRunAction(path: string, getBody?: () => unknown) {
+  function useRunAction(path: string, getBody?: () => unknown, slow = false) {
     return useMutation({
       mutationFn: async () =>
-        (await api.post(`/runs/${run.id}/${path}`, getBody ? getBody() : undefined)).data
-          .detail as RunDetail,
+        (
+          await api.post(
+            `/runs/${run.id}/${path}`,
+            getBody ? getBody() : undefined,
+            slow ? longRequest : undefined,
+          )
+        ).data.detail as RunDetail,
       onMutate: () => setActionError(null),
       onSuccess: (d) => {
         onChange(d);
@@ -57,7 +62,7 @@ export function RunPanel({
 
   // Hooks called unconditionally in a stable order every render.
   const applyM = useRunAction('apply', () => ({ paths: selected }));
-  const refineM = useRunAction('refine', () => ({ instructions: refineText }));
+  const refineM = useRunAction('refine', () => ({ instructions: refineText }), true);
   const revertM = useRunAction('revert');
   const testM = useRunAction('test');
   const commitM = useRunAction('commit', () => ({ message: commitMessage }));

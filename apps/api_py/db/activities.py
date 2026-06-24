@@ -57,5 +57,35 @@ class _ActivitiesRepo:
         ).fetchall()
         return [_map_row(r) for r in rows]
 
+    def list_for_user(self, user_id: str, limit: int = 20) -> list[dict]:
+        rows = get_db().execute(
+            """SELECT * FROM activities
+               WHERE user_id = ? OR user_id IS NULL
+               ORDER BY created_at DESC LIMIT ?""",
+            (user_id, limit),
+        ).fetchall()
+        return [_map_row(r) for r in rows]
+
+    def list_for_run(self, run_id: str, limit: int = 30) -> list[dict]:
+        rows = get_db().execute(
+            """SELECT * FROM activities
+               WHERE resource_type = 'run' AND resource_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (run_id, limit),
+        ).fetchall()
+        return [_map_row(r) for r in rows]
+
+    def list_for_projects(self, project_ids: list[str], limit: int = 20) -> list[dict]:
+        if not project_ids:
+            return []
+        placeholders = ",".join("?" * len(project_ids))
+        rows = get_db().execute(
+            f"""SELECT * FROM activities
+                WHERE project_id IN ({placeholders})
+                ORDER BY created_at DESC LIMIT ?""",
+            (*project_ids, limit),
+        ).fetchall()
+        return [_map_row(r) for r in rows]
+
 
 activities_repo = _ActivitiesRepo()

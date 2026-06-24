@@ -7,7 +7,7 @@ import type {
   RunDetail,
   TaskWorkflowStep,
 } from '@cpwork/shared';
-import { api, getApiErrorMessage } from '../../lib/api';
+import { api, getApiErrorMessage, longRequest } from '../../lib/api';
 import { RunPanel } from '../RunPanel';
 import { previousStep } from './constants';
 import {
@@ -70,6 +70,7 @@ export function WorkflowStepContent({
   onNavigate,
   onShowHistory,
   onStartNewTask,
+  hideSetupSteps,
 }: {
   detail: RunDetail;
   project: Project;
@@ -78,6 +79,8 @@ export function WorkflowStepContent({
   onNavigate: (step: TaskWorkflowStep) => void;
   onShowHistory?: () => void;
   onStartNewTask?: () => void;
+  /** When true, select/branch/describe UIs are omitted (handled on Requirements tab). */
+  hideSetupSteps?: boolean;
 }) {
   const wf = detail.workflow!;
   const run = detail.run;
@@ -124,7 +127,8 @@ export function WorkflowStepContent({
 
   const generatePlanM = useMutation({
     mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/generate-plan`)).data
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/generate-plan`, undefined, longRequest))
+        .data
         .detail,
     onMutate: () => setError(null),
     onSuccess: (d) => onChange(d),
@@ -150,7 +154,8 @@ export function WorkflowStepContent({
 
   const runAgentM = useMutation({
     mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/run-agent`)).data.detail,
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/run-agent`, undefined, longRequest))
+        .data.detail,
     onMutate: () => setError(null),
     onSuccess: (d) => onChange(d),
     onError: (err) => setError(getApiErrorMessage(err)),
@@ -164,7 +169,8 @@ export function WorkflowStepContent({
 
   const deployM = useMutation({
     mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/deploy`)).data.detail,
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/deploy`, undefined, longRequest))
+        .data.detail,
     onMutate: () => setError(null),
     onSuccess: (d) => onChange(d),
     onError: (err) => setError(getApiErrorMessage(err)),
@@ -172,8 +178,8 @@ export function WorkflowStepContent({
 
   const completeDeployM = useMutation({
     mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/complete-deploy`)).data
-        .detail,
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/complete-deploy`, undefined, longRequest))
+        .data.detail,
     onSuccess: (d) => onChange(d),
     onError: (err) => setError(getApiErrorMessage(err)),
   });
@@ -342,7 +348,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'select' && (
+      {step === 'select' && !hideSetupSteps && (
         <div className="card space-y-4 p-4">
           {jira ? (
             <SelectedJiraTaskCard issue={jira} productionBranch={project.git.productionBranch} />
@@ -360,7 +366,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'branch' && (
+      {step === 'branch' && !hideSetupSteps && (
         <div className="card space-y-4 p-4">
           <div>
             <h2 className="text-lg font-semibold">
@@ -441,7 +447,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'describe' && (
+      {step === 'describe' && !hideSetupSteps && (
         <div className="card space-y-4 p-4">
           {jira && (
             <div>
@@ -572,11 +578,15 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {(step === 'code_review' || step === 'deploy' || step === 'commit') && detail.output && (
+      {(step === 'deploy' || step === 'commit') && detail.output && !hideSetupSteps && (
         <RunPanel detail={detail} onChange={onChange} />
       )}
 
-      {step === 'code_review' && detail.output && (
+      {step === 'code_review' && detail.output && !hideSetupSteps && (
+        <RunPanel detail={detail} onChange={onChange} />
+      )}
+
+      {step === 'code_review' && detail.output && !hideSetupSteps && (
         <StepActions step={step} onBack={goBack}>
           <button
             className="btn-primary"
@@ -588,7 +598,7 @@ export function WorkflowStepContent({
         </StepActions>
       )}
 
-      {step === 'deploy' && (
+      {step === 'deploy' && !hideSetupSteps && (
         <div className="card space-y-4 p-4">
           <p className="text-sm text-slate-600">
             Run the local Magento deployment pipeline inside the <strong>php-fpm</strong> Docker
@@ -641,7 +651,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'commit' && (
+      {step === 'commit' && !hideSetupSteps && (
         <div className="card space-y-3 p-4">
           <p className="text-sm text-slate-600">
             Local deploy completed. Use the commit, push, and staging PR actions in the review panel
@@ -672,7 +682,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'jira_comment' && (
+      {step === 'jira_comment' && !hideSetupSteps && (
         <div className="card space-y-4 p-4">
           <p className="text-sm text-slate-600">
             Review and edit the comment below, then post it to Jira ticket{' '}
@@ -722,7 +732,7 @@ export function WorkflowStepContent({
         </div>
       )}
 
-      {step === 'done' && (
+      {step === 'done' && !hideSetupSteps && (
         <div className="card space-y-4 p-6">
           <div className="flex flex-wrap items-center gap-2">
             <span className="badge bg-green-100 text-green-700">✓ Task complete</span>
