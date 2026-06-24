@@ -8,16 +8,18 @@ from db.runs import runs_repo
 from db.project_roles import project_roles_repo
 from db.activities import activities_repo
 from db.ai_settings import run_usage_repo
+from database import now_iso
 from services.environment import resolve_environment
 from services.jira_service import get_issue_detail
 from services.ai_service import run_ai
-from services.repo_context import build_repo_context
+from services.repo_context import enrich_repo_context
 from services.git_service import (
     apply_changes, capture_backups, commit_all, compute_diffs,
     create_branch, get_status, push_branch, revert_changes,
 )
 from services.pr_service import create_pull_request
 from services.testing_service import run_tests
+from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
 from services.ai_providers.registry import enabled_provider_info
@@ -160,7 +162,9 @@ async def create_run(body: CreateRunBody, auth: dict = Depends(get_auth)):
             body.userInstructions,
             branch_name,
         ]))
-        repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
+        repo = enrich_repo_context(
+            resolved["cwd"], task_text, resolved["project"].get("frontendTheme"),
+        )
 
         ai_result = await run_ai(provider, body.model, {
             "project": resolved["project"],
@@ -238,12 +242,52 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
         raise HttpError.bad_request("No proposed changes to apply")
 
     resolved = resolve_environment(run["userId"], run["projectId"])
+    deploy = detail.get("deploy")
+    is_deploy_fix = (
+        run["mode"] == "workflow"
+        and deploy
+        and (deploy.get("lastFix") or {}).get("status") == "proposed"
+    )
+    if is_deploy_fix:
+        validation_errors = validate_deploy_fix_output(
+            resolved["cwd"], detail["output"], deploy.get("analysis") or {},
+        )
+    else:
+        validation_errors = validate_agent_output(resolved["cwd"], detail["output"])
+    if validation_errors["blocking"]:
+        message = (
+            "Cannot apply deploy fix — the proposal does not resolve the error. Regenerate fix. "
+            if is_deploy_fix
+            else "Cannot apply incomplete/stub code. Re-run the agent to generate full implementations. "
+        )
+        raise HttpError(
+            422,
+            message + "; ".join(validation_errors["blocking"][:3]),
+            "agent_stub_output",
+            {"errors": validation_errors["blocking"], "warnings": validation_errors["warnings"]},
+        )
+
     backups = capture_backups(resolved["cwd"], detail["output"]["files"], body.paths)
     apply_changes(resolved["cwd"], detail["output"]["files"], body.paths)
     git = await get_status(resolved["cwd"], resolved["project"]["git"]["productionBranch"])
     git["branch"] = run["branchName"]
 
-    patch_detail(run_id, {"applied": True, "git": git, "backups": backups})
+    applied_paths = body.paths or [f["path"] for f in detail["output"]["files"]]
+    test_report = await run_tests(
+        resolved["cwd"], applied_paths, resolved["env"].get("phpBin") or "php",
+    )
+
+    patch: dict = {"applied": True, "git": git, "backups": backups, "test": test_report}
+    if is_deploy_fix and deploy:
+        patch["deploy"] = {
+            **deploy,
+            "lastFix": {
+                **(deploy.get("lastFix") or {}),
+                "status": "applied",
+                "appliedAt": now_iso(),
+            },
+        }
+    patch_detail(run_id, patch)
     runs_repo.update_status(run_id, "testing")
     activities_repo.create({
         "userId": auth["sub"], "username": auth["username"],
@@ -272,7 +316,9 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
     try:
         task_text = " ".join(filter(None, [run["jiraKey"], run["userInstructions"],
                                            detail["output"].get("summary"), body.instructions, run["branchName"]]))
-        repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
+        repo = enrich_repo_context(
+            resolved["cwd"], task_text, resolved["project"].get("frontendTheme"),
+        )
         ai_result = await run_ai(provider, run.get("model"), {
             "project": resolved["project"],
             "cwd": resolved["cwd"],

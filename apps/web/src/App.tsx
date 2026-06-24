@@ -7,6 +7,7 @@ import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AdminProjectsPage } from './pages/admin/AdminProjectsPage';
 import { AdminAiProvidersPage } from './pages/admin/AdminAiProvidersPage';
+import { AdminAiRulesPage } from './pages/admin/AdminAiRulesPage';
 import { MyWorkPage } from './pages/MyWorkPage';
 import { AgentPortPage } from './pages/AgentPortPage';
 import { MyEnvironmentsPage } from './pages/MyEnvironmentsPage';
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/admin/users" element={<AdminUsersPage />} />
             <Route path="/admin/projects" element={<AdminProjectsPage />} />
             <Route path="/admin/ai-providers" element={<AdminAiProvidersPage />} />
+            <Route path="/admin/ai-rules" element={<AdminAiRulesPage />} />
           </>
         )}
         <Route path="/agent" element={<MyWorkPage />} />

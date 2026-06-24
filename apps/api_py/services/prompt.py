@@ -1,14 +1,29 @@
-MAGENTO_RULES = """You are a senior Magento 2 engineer working on a Hyva + Tailwind + Magewire storefront.
-Environment: PHP 8.3, MariaDB 10.6. Magento Admin is the source of truth.
+DEPLOY_FIX_RULES = """You are fixing a Magento deploy failure (setup:upgrade, compilation, static content deploy, composer, PHP/runtime errors, etc.).
 Rules:
-- No core edits. Use DI, plugins, observers, and service contracts.
-- Follow existing module structure under app/code/ and theme structure under app/design/.
-- Use ONLY paths that exist in the provided repository context (themes, modules, file excerpts). Do NOT invent vendor/theme/module names or guess file paths.
-- A template (.phtml) renders ONLY when a layout XML block references it. If you create or change a template, you MUST also add/modify the matching layout XML (e.g. <referenceContainer>/<block ... template="Vendor_Module::path.phtml"/>) so the change actually takes effect.
-- Edit inside the ACTIVE custom theme or a custom module — never core or vendor code.
-- The storefront home page is typically a CMS page (Admin → Content → Pages), not a phtml; do not assume a home.phtml renders unless layout wiring proves it.
-- Keep Hyva templates clean; use Tailwind utility classes. Use Magewire only where server-synced interactivity is needed.
-- Prefer small, focused changes that satisfy the task and are verifiably wired in."""
+- Fix ONLY the file(s) named in the deploy error output or PRIMARY FIX TARGETS list — whatever extension they use.
+- Do NOT change unrelated files. Read the error message, stack trace, and file path; edit the file(s) it actually points to.
+- Apply the correct fix for the failing file type:
+  * .xml (etc/*.xml, layout, db_schema, webapi, di, module, etc.): valid Magento XSD, correct root element and namespace for that file.
+  * .php: valid PHP 8.3 syntax, correct namespaces/use statements, constructor DI, real method bodies — no stubs.
+  * .phtml: valid template syntax; if the template changed, ensure matching layout XML references it.
+  * .js / .css / .less / .scss: valid syntax; compatible with Magento static content / theme build.
+  * .json (composer.json, etc.): valid JSON; fix version/dependency issues only when the error says so.
+  * Other paths in the error (app/code, app/design, generated, etc.): minimal fix for that file and error only.
+- Common XML specifics when relevant:
+  * db_schema.xml: identity= not auto_increment; never use primary= on <column> — use <constraint xsi:type="primary" referenceId="PRIMARY"> with nested <column name="..."/>; constraints use nested <column/> children (not columns= attribute).
+  * webapi.xml: root <routes> with xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Webapi:etc/webapi.xsd"; every <route> must include <service> and <resources><resource ref="..."/></resources>
+- Return the smallest change set that makes deployment succeed. Add PHPUnit tests only when you change PHP classes that require them; skip tests for config/XML/CSS/JS-only fixes."""
+
+IMPLEMENTATION_QUALITY_RULES = """Implementation quality (mandatory — responses violating these are REJECTED):
+- Write PRODUCTION-READY code like a senior developer using Cursor IDE. Every method must contain real executable logic.
+- FORBIDDEN: placeholder comments ("// Logic to...", "// TODO", "// implement"), empty method bodies, duplicate comment lines, or edits that only add comments.
+- FORBIDDEN: describing work in comments instead of writing code. If the summary says "implemented X", the code must actually do X.
+- Observers: inject services via constructor (DI), call real methods (e.g. $this->feedRegenerator->markDirty()).
+- API/service classes: implement full method bodies with repositories, resource models, or collections — not comment stubs.
+- XML must be valid Magento schema (db_schema: identity= not auto_increment; constraints use nested <column/> children).
+- Wire dependencies in etc/di.xml. Register events, webapi routes, and console commands as needed.
+- ALWAYS include PHPUnit unit tests for new/changed PHP classes under app/code/Vendor/Module/Test/Unit/.
+- Tests must instantiate the class (with mocks) and assert real behavior — not empty test bodies."""
 
 AGENT_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
 {
@@ -28,14 +43,72 @@ AGENT_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdow
   "risks": ["risk 1"]
 }
 CRITICAL rules for files:
-- action="create": provide "content" (the full new file). Do NOT provide "edits".
-- action="modify": provide "edits" — a list of targeted search/replace operations. Do NOT return full file content for a modify; that would destroy unrelated code.
-    * "oldString" MUST be copied VERBATIM from the provided file excerpt (exact whitespace/indentation) and include enough surrounding lines to be UNIQUE in that file.
-    * Preserve everything you are not explicitly changing.
-    * To INSERT without deleting, set "oldString" to an existing nearby line and include that same line plus your new lines in "newString".
-    * Keep each oldString small and focused on the specific lines/section to change — never the whole file.
+- action="create": provide "content" (the complete new file). Do NOT provide "edits".
+- action="modify": provide "edits" — targeted search/replace. Do NOT return full file content for modify.
+    * "oldString" MUST be copied VERBATIM from the provided file excerpt (exact whitespace/indentation).
+    * When replacing a stub method, set oldString to the ENTIRE method (signature + body) and newString to the full new method with real logic.
+    * NEVER add a comment line as the only change. newString must contain executable PHP statements.
 - action="delete": no "content" or "edits".
-- Use repository-relative paths. Only include files you actually change. Never modify a file you have not seen in the provided excerpts unless you are creating it new."""
+- Use repository-relative paths. Only include files you actually change.
+- Include Test/Unit/*.php files for every new Observer, Model, Service, or API class you create or substantially change.
+
+BAD modify edit (REJECTED):
+  oldString: "    public function execute(Observer $observer) {\\n        // Logic to set feed_status = DIRTY\\n    }"
+  newString: "    public function execute(Observer $observer) {\\n        // Logic to set feed_status = DIRTY\\n\\n        // Logic to set feed_status = DIRTY\\n    }"
+
+GOOD modify edit (ACCEPTED):
+  oldString: "    public function execute(Observer $observer) {\\n        // Logic to set feed_status = DIRTY\\n    }"
+  newString: "    public function __construct(\\n        private readonly FeedRegenerator $feedRegenerator\\n    ) {}\\n\\n    public function execute(Observer $observer): void\\n    {\\n        $this->feedRegenerator->markDirty();\\n    }"
+
+GOOD test file (REQUIRED for new PHP classes):
+  path: app/code/Vendor/Module/Test/Unit/Observer/ProductSaveAfterTest.php
+  action: create
+  content: full PHPUnit test class with mocks and assertions"""
+
+DEFAULT_MAGENTO_RULES_TEMPLATE = """You are a senior Magento 2 engineer working on a Hyva + Tailwind + Magewire storefront.
+Environment: PHP 8.3, MariaDB 10.6. Magento Admin is the source of truth.
+You work like Cursor IDE: read the task, write complete working code, add unit tests, and wire everything in DI/XML.
+Rules:
+- No core edits. Use DI, plugins, observers, and service contracts.
+- Follow existing module structure under app/code/ and theme structure under app/design/.
+- Use ONLY paths that exist in the provided repository context (themes, modules, file excerpts). Do NOT invent vendor/theme/module names or guess file paths.
+- A template (.phtml) renders ONLY when a layout XML block references it. If you create or change a template, you MUST also add/modify the matching layout XML (e.g. <referenceContainer>/<block ... template="Vendor_Module::path.phtml"/>) so the change actually takes effect.
+- Edit inside the ACTIVE custom theme or a custom module — never core or vendor code.
+- The storefront home page is typically a CMS page (Admin → Content → Pages), not a phtml; do not assume a home.phtml renders unless layout wiring proves it.
+- Keep Hyva templates clean; use Tailwind utility classes. Use Magewire only where server-synced interactivity is needed.
+- Deliver the FULL feature from the task/plan — not scaffolding, not comments describing what code should do.
+
+{IMPLEMENTATION_QUALITY_RULES}"""
+
+MAGENTO_RULES = DEFAULT_MAGENTO_RULES_TEMPLATE.replace(
+    "{IMPLEMENTATION_QUALITY_RULES}", IMPLEMENTATION_QUALITY_RULES
+)
+
+
+from services.prompt_budget import (
+    MAX_JIRA_DESCRIPTION_CHARS,
+    MAX_PLAN_CHARS,
+    MAX_DEPLOY_OUTPUT_CHARS,
+    trim_text,
+)
+
+
+def _rules_for_ctx(ctx: dict) -> dict:
+    from services.ai_rules import resolve_effective_rules
+
+    project = ctx.get("project") or {}
+    project_id = project.get("id")
+    if ctx.get("aiRules"):
+        rules = ctx["aiRules"]
+        return {
+            "magentoRules": rules["magentoRules"],
+            "agentOutputContract": rules["agentOutputContract"],
+        }
+    effective = resolve_effective_rules(project_id)
+    return {
+        "magentoRules": effective["magentoRules"],
+        "agentOutputContract": effective["agentOutputContract"],
+    }
 
 
 def _jira_block(ctx: dict) -> str:
@@ -50,7 +123,7 @@ def _jira_block(ctx: dict) -> str:
         f"Labels: {', '.join(jira['labels'])}" if jira.get("labels") else "",
         "",
         "Description:",
-        jira.get("description") or "(none)",
+        trim_text(jira.get("description") or "(none)", MAX_JIRA_DESCRIPTION_CHARS),
         f"\nAttachments: {', '.join(a['filename'] for a in jira['attachments'])}" if jira.get("attachments") else "",
     ]
     return "\n".join(p for p in parts if p is not None)
@@ -71,8 +144,28 @@ def _excerpts_block(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+def _validation_retry_block(ctx: dict) -> str:
+    errors = ctx.get("validationErrors") or []
+    if not errors:
+        return ""
+    lines = [
+        "\n\n*** YOUR PREVIOUS RESPONSE WAS REJECTED ***",
+        "The following problems must be fixed in this response:",
+        *[f"- {err}" for err in errors],
+        "\nRewrite the COMPLETE proposal with:",
+        "- Real PHP implementations (constructor DI + method bodies with executable statements)",
+        "- NO placeholder comments or duplicate comment lines",
+        "- PHPUnit Test/Unit classes for each new/changed PHP class",
+        "- For stub files, prefer action=create with full file content OR replace entire methods in edits",
+    ]
+    return "\n".join(lines)
+
+
 def build_prompt(ctx: dict) -> dict:
     project = ctx["project"]
+    rules = _rules_for_ctx(ctx)
+    magento_rules = rules["magentoRules"]
+    agent_output_contract = rules["agentOutputContract"]
     project_block_parts = [
         f"Project: {project['name']}",
         f"Local path: {ctx['cwd']}",
@@ -85,6 +178,7 @@ def build_prompt(ctx: dict) -> dict:
     common = f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}{_excerpts_block(ctx)}"
 
     mode = ctx["mode"]
+    validation_block = _validation_retry_block(ctx)
 
     if mode == "agent":
         prior_output = ctx.get("priorOutput")
@@ -92,7 +186,8 @@ def build_prompt(ctx: dict) -> dict:
         plan_block = ""
         if approved_plan:
             plan_block = (
-                f"\n\nYou MUST implement this approved plan exactly:\n\n{approved_plan}\n\n"
+                f"\n\nYou MUST implement this approved plan exactly:\n\n"
+                f"{trim_text(approved_plan, MAX_PLAN_CHARS)}\n\n"
                 "Follow the plan's steps, files, and test checklist."
             )
         if prior_output:
@@ -101,36 +196,97 @@ def build_prompt(ctx: dict) -> dict:
                 f"\n\nYou previously proposed this change:\nSummary: {prior_output.get('summary', '')}\n"
                 f"Files:\n{prior_files}\n\nThe developer now requests an ADDITIONAL change on top of that proposal:\n"
                 f"{ctx.get('refineInstructions', '')}\n\nReturn an UPDATED, COMPLETE proposal "
-                "(include every file that should change, not just the new part), following the same JSON contract and edit rules."
+                "(include every file that should change, not just the new part), following the same JSON contract and edit rules. "
+                "Replace any stub/placeholder code with full implementations."
             )
             return {
-                "system": f"{MAGENTO_RULES}\n\n{AGENT_OUTPUT_CONTRACT}",
-                "user": f"Refine the implementation for the following task.\n\n{common}{plan_block}{refine_block}",
+                "system": f"{magento_rules}\n\n{agent_output_contract}",
+                "user": f"Refine the implementation for the following task.\n\n{common}{plan_block}{refine_block}{validation_block}",
                 "jsonMode": True,
             }
         return {
-            "system": f"{MAGENTO_RULES}\n\n{AGENT_OUTPUT_CONTRACT}",
-            "user": f"Implement the following task.\n\n{common}{plan_block}",
+            "system": f"{magento_rules}\n\n{agent_output_contract}",
+            "user": (
+                f"Implement the following task with COMPLETE, production-ready code and PHPUnit unit tests. "
+                f"Work like Cursor IDE — write real implementations, not comments describing logic.\n\n"
+                f"{common}{plan_block}{validation_block}"
+            ),
+            "jsonMode": True,
+        }
+
+    if mode == "deploy_fix":
+        analysis = ctx.get("deployAnalysis") or {}
+        deploy_output = trim_text(ctx.get("deployOutput") or "", MAX_DEPLOY_OUTPUT_CHARS)
+        issue_lines = "\n".join(
+            f"- {i.get('kind')}: {i.get('message')}" for i in analysis.get("issues") or []
+        )
+        error_files = analysis.get("errorFiles") or []
+        target_block = ""
+        if error_files:
+            target_block = (
+                "\n\nPRIMARY FIX TARGETS (edit these files — they are named in the deploy error):\n"
+                + "\n".join(f"- {path}" for path in error_files)
+            )
+        deploy_excerpts = ctx.get("deployFileExcerpts") or []
+        excerpt_block = ""
+        if deploy_excerpts:
+            lines = ["\nFiles related to the deploy failure (read before editing):"]
+            for f in deploy_excerpts:
+                lines.append(f"\n--- {f['path']} ---\n{f['content']}")
+            excerpt_block = "\n".join(lines)
+        approved_plan = ctx.get("approvedPlanMarkdown")
+        plan_block = ""
+        if approved_plan:
+            plan_block = (
+                f"\n\nApproved implementation plan (context only — do not fix unrelated files):\n\n"
+                f"{trim_text(approved_plan, MAX_PLAN_CHARS)}"
+            )
+        last_fix = ctx.get("lastFailedFix")
+        retry_block = ""
+        if last_fix and last_fix.get("paths"):
+            retry_block = (
+                "\n\n*** PREVIOUS FIX DID NOT WORK — DO NOT REPEAT ***\n"
+                f"Summary attempted: {last_fix.get('summary', '(none)')}\n"
+                f"Files changed: {', '.join(last_fix.get('paths') or [])}\n"
+                "The deploy error below is still failing. Propose a DIFFERENT fix targeting "
+                "the file(s) in the deploy error output, not the same files unless the error still points there."
+            )
+        slim_common = (
+            f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}"
+        )
+        return {
+            "system": f"{DEPLOY_FIX_RULES}\n\n{agent_output_contract}",
+            "user": (
+                "A local Magento deployment failed. Fix the error with minimal, targeted file changes.\n\n"
+                f"{slim_common}{plan_block}{target_block}{retry_block}\n\n"
+                f"Deploy failure summary: {analysis.get('summary', 'Unknown')}\n"
+                f"Failed step: {analysis.get('failedStep') or 'unknown'}\n"
+                f"Issues:\n{issue_lines or '(see deploy output below)'}\n\n"
+                f"Deploy command output (excerpt):\n{deploy_output}\n"
+                f"{excerpt_block}\n\n"
+                "Fix the deploy error only. Return the smallest change set that makes deployment succeed."
+                f"{validation_block}"
+            ),
             "jsonMode": True,
         }
 
     if mode == "plan":
         return {
-            "system": f"{MAGENTO_RULES}\n\nProduce a clear implementation plan. Do NOT write file contents. Use concise markdown with steps, files to touch, and a test checklist.",
+            "system": f"{magento_rules}\n\nProduce a clear implementation plan. Do NOT write file contents. Use concise markdown with steps, files to touch, and a test checklist.",
             "user": f"Create an implementation plan for this task.\n\n{common}",
             "jsonMode": False,
         }
 
     if mode == "debug":
         return {
-            "system": f"{MAGENTO_RULES}\n\nYou are debugging. Analyze the problem, identify likely causes, and propose a minimal fix. Use concise markdown.",
+            "system": f"{magento_rules}\n\nYou are debugging. Analyze the problem, identify likely causes, and propose a minimal fix. Use concise markdown.",
             "user": f"Investigate and propose a fix for this issue.\n\n{common}",
             "jsonMode": False,
         }
 
     # ask
     return {
-        "system": f"{MAGENTO_RULES}\n\nAnswer the question clearly and concisely in markdown.",
+        "system": f"{magento_rules}\n\nAnswer the question clearly and concisely in markdown.",
         "user": common,
         "jsonMode": False,
     }

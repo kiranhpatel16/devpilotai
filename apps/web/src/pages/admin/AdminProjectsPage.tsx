@@ -1,10 +1,16 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Project } from '@cpwork/shared';
 import { api, getApiErrorMessage } from '../../lib/api';
 import { ConfirmDeleteModal } from '../../components/ConfirmDeleteModal';
 
-type ProjectWithCount = Project & { userCount: number; hasJiraToken: boolean; hasGitToken?: boolean };
+type ProjectWithCount = Project & {
+  userCount: number;
+  hasJiraToken: boolean;
+  hasGitToken?: boolean;
+  hasCustomAiRules?: boolean;
+};
 
 const emptyForm = {
   name: '',
@@ -35,6 +41,9 @@ export function AdminProjectsPage() {
   const [editing, setEditing] = useState<ProjectWithCount | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<ProjectWithCount | null>(null);
+  const [aiRulesNotice, setAiRulesNotice] = useState<{ projectId: string; name: string } | null>(
+    null,
+  );
 
   const projectsQ = useQuery({
     queryKey: ['admin', 'projects'],
@@ -55,6 +64,27 @@ export function AdminProjectsPage() {
         </button>
       </div>
 
+      {aiRulesNotice && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Project <strong>{aiRulesNotice.name}</strong> saved. It is using{' '}
+          <strong>system default AI rules</strong>.{' '}
+          <Link
+            to={`/admin/ai-rules?project=${aiRulesNotice.projectId}`}
+            className="font-medium text-brand-700 underline"
+          >
+            Add custom AI rules
+          </Link>{' '}
+          for implementation quality, Magento conventions, and agent output — or keep defaults.
+          <button
+            type="button"
+            className="ml-3 text-amber-700 underline"
+            onClick={() => setAiRulesNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-slate-500">
@@ -63,6 +93,7 @@ export function AdminProjectsPage() {
               <th className="px-4 py-2">Slug</th>
               <th className="px-4 py-2">Default path</th>
               <th className="px-4 py-2">Jira</th>
+              <th className="px-4 py-2">AI rules</th>
               <th className="px-4 py-2">Users</th>
               <th className="px-4 py-2 text-right">Actions</th>
             </tr>
@@ -76,6 +107,23 @@ export function AdminProjectsPage() {
                   {p.defaults.projectRoot || '—'}
                 </td>
                 <td className="px-4 py-2 text-slate-500">{p.jira.projectKey ?? '—'}</td>
+                <td className="px-4 py-2">
+                  {p.hasCustomAiRules ? (
+                    <Link
+                      to={`/admin/ai-rules?project=${p.id}`}
+                      className="text-green-700 hover:underline"
+                    >
+                      Custom
+                    </Link>
+                  ) : (
+                    <Link
+                      to={`/admin/ai-rules?project=${p.id}`}
+                      className="text-slate-400 hover:underline"
+                    >
+                      Defaults
+                    </Link>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-slate-400">{p.userCount}</td>
                 <td className="px-4 py-2 text-right">
                   <div className="flex justify-end gap-1">
@@ -104,10 +152,13 @@ export function AdminProjectsPage() {
             setCreating(false);
             setEditing(null);
           }}
-          onSaved={() => {
+          onSaved={(saved) => {
             setCreating(false);
             setEditing(null);
             invalidate();
+            if (saved && !saved.hasCustomAiRules) {
+              setAiRulesNotice({ projectId: saved.id, name: saved.name });
+            }
           }}
         />
       )}
@@ -160,7 +211,7 @@ function ProjectModal({
 }: {
   project: ProjectWithCount | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (project?: ProjectWithCount) => void;
 }) {
   const [form, setForm] = useState<FormState>(toForm(project));
   const [tokenFlags, setTokenFlags] = useState({
@@ -282,7 +333,7 @@ function ProjectModal({
         });
         setForm((f) => ({ ...f, gitApiToken: '', jiraApiToken: '' }));
       }
-      onSaved();
+      onSaved(saved);
     },
     onError: (err) => setError(getApiErrorMessage(err)),
   });

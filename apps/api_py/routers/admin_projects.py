@@ -6,6 +6,7 @@ from lib.crypto import encrypt_secret
 from middleware.auth import require_admin, get_auth
 from db.projects import projects_repo
 from db.project_roles import project_roles_repo
+from db.project_ai_rules import project_ai_rules_repo
 from db.environments import environments_repo
 from db.activities import activities_repo
 from services.jira_service import resolve_jira, test_connection
@@ -93,6 +94,7 @@ async def list_projects(auth: dict = Depends(require_admin)):
         "userCount": project_roles_repo.count_users_for_project(p["id"]),
         "hasJiraToken": projects_repo.has_jira_token(p["id"]),
         "hasGitToken": projects_repo.has_git_token(p["id"]),
+        "hasCustomAiRules": project_ai_rules_repo.has_custom_rules(p["id"]),
     } for p in projects]}
 
 
@@ -134,6 +136,7 @@ async def create_project(body: CreateProjectBody, auth: dict = Depends(require_a
             **project,
             "hasJiraToken": projects_repo.has_jira_token(project["id"]),
             "hasGitToken": projects_repo.has_git_token(project["id"]),
+            "hasCustomAiRules": project_ai_rules_repo.has_custom_rules(project["id"]),
         },
     }
 
@@ -192,6 +195,7 @@ async def update_project(project_id: str, body: UpdateProjectBody, auth: dict = 
             **project,
             "hasJiraToken": projects_repo.has_jira_token(project_id),
             "hasGitToken": projects_repo.has_git_token(project_id),
+            "hasCustomAiRules": project_ai_rules_repo.has_custom_rules(project_id),
         },
     }
 

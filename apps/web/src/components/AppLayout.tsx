@@ -81,6 +81,9 @@ export function AppLayout() {
           <NavLink to="/admin/ai-providers" className={navClass} onClick={() => setMobileOpen(false)}>
             AI Providers
           </NavLink>
+          <NavLink to="/admin/ai-rules" className={navClass} onClick={() => setMobileOpen(false)}>
+            AI Rules
+          </NavLink>
         </>
       )}
       <NavLink to="/agent" className={navClass} onClick={() => setMobileOpen(false)}>
