@@ -1,9 +1,22 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { isAdminRole } from '@cpwork/shared';
 import { useAuth } from './auth/AuthContext';
-import { AppLayout } from './components/AppLayout';
+import { AppShell } from './components/layout/AppShell';
 import { LoginPage } from './pages/LoginPage';
-import { AdminDashboard } from './pages/admin/AdminDashboard';
+import { DashboardPage } from './pages/DashboardPage';
+import { WorkspacesRedirectPage } from './pages/WorkspacesRedirectPage';
+import { WorkspacesEmptyPage } from './pages/WorkspacesEmptyPage';
+import { WorkspaceTaskBoardPage } from './pages/WorkspaceTaskBoardPage';
+import { TaskExecutionCenterPage } from './pages/TaskExecutionCenterPage';
+import { TasksPage } from './pages/TasksPage';
+import { CustomTasksPage } from './pages/CustomTasksPage';
+import { IncidentsPage } from './pages/IncidentsPage';
+import { TaskHistoryPage } from './pages/TaskHistoryPage';
+import { AgentsPage } from './pages/AgentsPage';
+import { KnowledgePage } from './pages/KnowledgePage';
+import { DeploymentsPage } from './pages/DeploymentsPage';
+import { ReportsPage } from './pages/ReportsPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AdminProjectsPage } from './pages/admin/AdminProjectsPage';
 import { AdminAiProvidersPage } from './pages/admin/AdminAiProvidersPage';
@@ -12,19 +25,10 @@ import { MyWorkPage } from './pages/MyWorkPage';
 import { AgentPortPage } from './pages/AgentPortPage';
 import { MyEnvironmentsPage } from './pages/MyEnvironmentsPage';
 
-function FullScreen({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex min-h-screen items-center justify-center text-slate-500">
-      {children}
-    </div>
-  );
-}
-
 export default function App() {
-  const { session, loading } = useAuth();
+  const { session } = useAuth();
 
-  if (loading) return <FullScreen>Loading DevPilot AI…</FullScreen>;
-
+  // No session → login immediately (never block on /auth/me).
   if (!session) {
     return (
       <Routes>
@@ -35,7 +39,7 @@ export default function App() {
   }
 
   const admin = isAdminRole(session.user.globalRole);
-  const home = admin ? '/admin' : '/agent';
+  const home = '/workspaces';
 
   return (
     <Routes>
@@ -57,4 +61,14 @@ export default function App() {
       </Route>
     </Routes>
   );
+}
+
+function LegacyAgentRedirect() {
+  const { projectId } = useParams();
+  return <Navigate to={`/workspaces/${projectId}`} replace />;
+}
+
+function LegacyTasksRedirect() {
+  const { projectId } = useParams();
+  return <Navigate to={`/workspaces/${projectId}`} replace />;
 }

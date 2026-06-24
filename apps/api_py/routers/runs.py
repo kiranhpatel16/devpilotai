@@ -393,11 +393,12 @@ async def test_run(run_id: str, auth: dict = Depends(get_auth)):
 async def commit_run(run_id: str, body: CommitBody, auth: dict = Depends(get_auth)):
     run = _load_owned_run(run_id, auth)
     resolved = resolve_environment(run["userId"], run["projectId"])
-    await commit_all(resolved["cwd"], body.message)
+    hexsha = await commit_all(resolved["cwd"], body.message)
     git = await get_status(resolved["cwd"], resolved["project"]["git"]["productionBranch"])
     git["branch"] = run["branchName"]
     git["committed"] = True
     git["commitMessage"] = body.message
+    git["lastCommitSha"] = hexsha
     patch_detail(run_id, {"git": git})
     runs_repo.update_status(run_id, "pushing")
     activities_repo.create({

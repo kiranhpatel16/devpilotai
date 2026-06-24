@@ -21,6 +21,10 @@ def _map_row(row) -> dict:
             "backendUrl": row["default_backend_url"],
             "dockerComposePath": row["default_docker_compose"],
             "dockerPatchId": row["default_docker_patch_id"],
+            "deployProfile": row["deploy_profile"] if "deploy_profile" in row.keys() else "auto",
+            "deploySkipComposer": bool(row["deploy_skip_composer"])
+            if "deploy_skip_composer" in row.keys()
+            else False,
         },
         "git": {
             "remote": row["git_remote"],
@@ -139,6 +143,7 @@ class _ProjectsRepo:
                name=?, slug=?, description=?, enabled=?, frontend_theme=?,
                default_project_root=?, default_frontend_url=?, default_backend_url=?,
                default_docker_compose=?, default_docker_patch_id=?,
+               deploy_profile=?, deploy_skip_composer=?,
                git_remote=?, git_production_branch=?, git_staging_branch=?,
                git_pr_target_branch=?, git_commit_template=?,
                git_pr_provider=?, git_repo_owner=?, git_repo_name=?, git_api_username=?,
@@ -152,6 +157,8 @@ class _ProjectsRepo:
                 merged["defaults"]["projectRoot"], merged["defaults"].get("frontendUrl"),
                 merged["defaults"].get("backendUrl"), merged["defaults"].get("dockerComposePath"),
                 merged["defaults"].get("dockerPatchId"),
+                merged["defaults"].get("deployProfile") or "auto",
+                1 if merged["defaults"].get("deploySkipComposer") else 0,
                 merged["git"].get("remote") or "origin",
                 merged["git"].get("productionBranch") or "production",
                 merged["git"].get("stagingBranch") or "staging",

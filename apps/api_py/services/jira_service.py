@@ -152,6 +152,15 @@ def build_jql(project: dict, options: dict = {}) -> str:
     return f"{where} ORDER BY updated DESC" if where else "ORDER BY updated DESC"
 
 
+def _resolve_status_label(configured: list[str], task_status: str) -> str:
+    """Map a Jira task status onto a configured filter label (case-insensitive)."""
+    task_lower = (task_status or "").strip().lower()
+    for label in configured:
+        if label.strip().lower() == task_lower:
+            return label
+    return task_status
+
+
 async def get_board(project_id: str, options: dict = {}) -> dict:
     resolved = resolve_jira(project_id)
     if not resolved:
@@ -174,11 +183,15 @@ async def get_board(project_id: str, options: dict = {}) -> dict:
     order = [s for s in (project["jira"].get("statusFilters") or []) if s]
     group_map: dict[str, list] = {s: [] for s in order}
     for task in tasks:
-        if task["status"] not in group_map:
-            group_map[task["status"]] = []
-        group_map[task["status"]].append(task)
+        label = _resolve_status_label(order, task["status"])
+        if label not in group_map:
+            group_map[label] = []
+        group_map[label].append(task)
 
-    groups = [{"status": status, "tasks": task_list} for status, task_list in group_map.items()]
+    groups = [{"status": status, "tasks": group_map[status]} for status in order]
+    for status, task_list in group_map.items():
+        if status not in order:
+            groups.append({"status": status, "tasks": task_list})
     return {
         "configured": True,
         "projectKey": project["jira"]["projectKey"],

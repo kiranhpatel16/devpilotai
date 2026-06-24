@@ -199,6 +199,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE projects ADD COLUMN git_api_username TEXT")
     if "git_api_token_enc" not in proj_cols:
         conn.execute("ALTER TABLE projects ADD COLUMN git_api_token_enc TEXT")
+    if "deploy_profile" not in proj_cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN deploy_profile TEXT NOT NULL DEFAULT 'auto'")
+    if "deploy_skip_composer" not in proj_cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN deploy_skip_composer INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
 
 

@@ -24,11 +24,11 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 dark:bg-slate-900 px-4 transition-colors">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 transition-colors dark:bg-slate-900">
       <div className="w-full max-w-sm">
-        <div className="mb-6 text-center relative">
-          <h1 className="text-2xl font-bold text-brand-700 dark:text-brand-400">DevPilot AI</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Plan. Build. Test. Deploy. Powered by AI.</p>
+        <div className="relative mb-6 text-center">
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">DevPilot AI</h1>
+          <p className="text-sm text-slate-500">Plan. Build. Test. Deploy. Powered by AI.</p>
           <button
             type="button"
             onClick={toggleTheme}

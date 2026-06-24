@@ -38,4 +38,7 @@ SEED_ADMIN_USERNAME = os.environ.get("SEED_ADMIN_USERNAME", "admin")
 SEED_ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "ChangeMe123!")
 SEED_ADMIN_NAME = os.environ.get("SEED_ADMIN_NAME", "Administrator")
 
+AI_CREDITS_LIMIT = int(os.environ.get("AI_CREDITS_LIMIT", "20000"))
+TOKENS_PER_CREDIT = int(os.environ.get("TOKENS_PER_CREDIT", "1000"))
+
 IS_PROD = ENV == "production"

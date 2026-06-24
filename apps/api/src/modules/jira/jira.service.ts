@@ -99,6 +99,12 @@ export function buildJql(project: Project, options: BoardOptions = {}): string {
   return where ? `${where} ORDER BY updated DESC` : 'ORDER BY updated DESC';
 }
 
+function resolveStatusLabel(configured: string[], taskStatus: string): string {
+  const taskLower = (taskStatus || '').trim().toLowerCase();
+  const match = configured.find((label) => label.trim().toLowerCase() === taskLower);
+  return match ?? taskStatus;
+}
+
 export async function getBoard(
   projectId: string,
   options: BoardOptions = {},
@@ -124,12 +130,19 @@ export async function getBoard(
   const groupMap = new Map<string, JiraTask[]>();
   for (const status of order) groupMap.set(status, []);
   for (const task of tasks) {
-    if (!groupMap.has(task.status)) groupMap.set(task.status, []);
-    groupMap.get(task.status)!.push(task);
+    const label = resolveStatusLabel(order, task.status);
+    if (!groupMap.has(label)) groupMap.set(label, []);
+    groupMap.get(label)!.push(task);
   }
-  const groups: JiraStatusGroup[] = Array.from(groupMap.entries()).map(
-    ([status, groupTasks]) => ({ status, tasks: groupTasks }),
-  );
+  const groups: JiraStatusGroup[] = order.map((status) => ({
+    status,
+    tasks: groupMap.get(status) ?? [],
+  }));
+  for (const [status, groupTasks] of groupMap.entries()) {
+    if (!order.includes(status)) {
+      groups.push({ status, tasks: groupTasks });
+    }
+  }
 
   return {
     configured: true,

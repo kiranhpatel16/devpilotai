@@ -17,6 +17,7 @@ from services.git_service import (
     compute_diffs,
     create_branch,
     get_status,
+    get_recent_commits
 )
 from services.run_detail import load_detail, patch_detail, save_detail
 from services.task_plan_storage import save_task_plan, read_task_plan
@@ -593,8 +594,61 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     php_bin = resolved["env"].get("phpBin") or "php"
     docker_compose_path = resolved["env"].get("dockerComposePath")
     cwd = resolved["cwd"]
+    project = resolved["project"]
+    defaults = project.get("defaults") or {}
+    changed_paths = [f["path"] for f in (detail.get("output") or {}).get("files") or []]
+    profile = resolve_deploy_profile(
+        changed_paths,
+        defaults.get("deployProfile") or "auto",
+    )
+    profile_reason = deploy_profile_reason(profile, changed_paths)
 
     _schedule_deploy_job(run_id, cwd, php_bin, docker_compose_path)
+    patch_detail(run_id, {
+        "deploy": {
+            "ranAt": now_iso(),
+            "ok": False,
+            "running": True,
+            "steps": [],
+            "runningStep": "docker_target",
+            "profile": profile,
+            "profileReason": profile_reason,
+        },
+    })
+    runs_repo.update_fields(run_id, {"status": "deploying"})
+
+    async def on_progress(report: dict) -> None:
+        patch_detail(run_id, {"deploy": report})
+
+    async def job() -> None:
+        try:
+            report = await run_local_deploy(
+                cwd,
+                php_bin,
+                docker_compose_path,
+                on_progress=on_progress,
+                changed_paths=changed_paths,
+                project_deploy_mode=defaults.get("deployProfile") or "auto",
+                skip_composer_project=bool(defaults.get("deploySkipComposer")),
+            )
+            patch_detail(run_id, {"deploy": report})
+            runs_repo.update_fields(run_id, {
+                "status": "deploy_ready" if report["ok"] else "deploy_failed",
+            })
+        except Exception as exc:
+            failed = {
+                "ranAt": now_iso(),
+                "ok": False,
+                "running": False,
+                "steps": load_detail(run_id).get("deploy", {}).get("steps", []),
+                "error": str(exc),
+            }
+            patch_detail(run_id, {"deploy": failed})
+            runs_repo.update_fields(run_id, {"status": "deploy_failed"})
+        finally:
+            _deploy_tasks.pop(run_id, None)
+
+    _deploy_tasks[run_id] = asyncio.create_task(job())
     return {"detail": _assemble_detail(run_id)}
 
 
@@ -763,3 +817,102 @@ async def sync_test_rate(run_id: str, auth: dict = Depends(get_auth)):
     rate = compute_test_pass_rate(detail.get("test"))
     patch_detail(run_id, {"testPassRate": rate})
     return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/pause")
+async def pause_run(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    if run["status"] in ("done", "cancelled", "failed"):
+        raise HttpError.bad_request("Cannot pause a finished run")
+    if run["status"] == "paused":
+        return {"detail": _assemble_detail(run_id)}
+    runs_repo.update_fields(run_id, {"status": "paused"})
+    patch_detail(run_id, {"pausedAt": now_iso()})
+    activities_repo.create({
+        "userId": auth["sub"],
+        "username": auth["username"],
+        "action": "workflow.paused",
+        "resourceType": "run",
+        "resourceId": run_id,
+        "projectId": run["projectId"],
+        "jiraKey": run.get("jiraKey"),
+        "summary": f"{auth['username']} paused workflow {run.get('jiraKey') or run_id}",
+    })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    if run["status"] != "paused":
+        raise HttpError.bad_request("Run is not paused")
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    step = wf.get("currentStep", "select")
+    status_map = {
+        "agent": "analyzing",
+        "deploy": "deploying",
+        "commit": "commit_ready",
+        "done": "done",
+    }
+    runs_repo.update_fields(run_id, {"status": status_map.get(step, "awaiting_review")})
+    patch_detail(run_id, {"pausedAt": None, "resumedAt": now_iso()})
+    activities_repo.create({
+        "userId": auth["sub"],
+        "username": auth["username"],
+        "action": "workflow.resumed",
+        "resourceType": "run",
+        "resourceId": run_id,
+        "projectId": run["projectId"],
+        "jiraKey": run.get("jiraKey"),
+        "summary": f"{auth['username']} resumed workflow {run.get('jiraKey') or run_id}",
+    })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    if run["status"] in ("done", "cancelled"):
+        raise HttpError.bad_request("Run is already finished")
+    deploy_task = _deploy_tasks.pop(run_id, None)
+    if deploy_task and not deploy_task.done():
+        deploy_task.cancel()
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    patch_detail(run_id, {
+        "approvalStatus": "failed",
+        "cancelledAt": now_iso(),
+        "deploy": {**(detail.get("deploy") or {}), "running": False},
+    })
+    runs_repo.update_fields(run_id, {
+        "status": "cancelled",
+        "approvalStatus": "failed",
+    })
+    activities_repo.create({
+        "userId": auth["sub"],
+        "username": auth["username"],
+        "action": "workflow.cancelled",
+        "resourceType": "run",
+        "resourceId": run_id,
+        "projectId": run["projectId"],
+        "jiraKey": run.get("jiraKey"),
+        "summary": f"{auth['username']} cancelled workflow {run.get('jiraKey') or run_id}",
+    })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.get("/runs/{run_id}/commits")
+async def list_commits(run_id: str, auth: dict = Depends(get_auth), limit: int = 10):
+    run = _load_workflow_run(run_id, auth)
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    branch = run.get("branchName") or (load_detail(run_id).get("git") or {}).get("branch")
+    commits = await get_recent_commits(resolved["cwd"], branch, limit=min(limit, 25))
+    return {"commits": commits, "branch": branch}
+
+
+@router.get("/runs/{run_id}/activities")
+async def list_run_activities(run_id: str, auth: dict = Depends(get_auth), limit: int = 30):
+    _load_workflow_run(run_id, auth)
+    activities = activities_repo.list_for_run(run_id, limit=min(limit, 50))
+    return {"activities": activities}

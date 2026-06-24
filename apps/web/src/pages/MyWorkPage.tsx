@@ -53,10 +53,10 @@ export function MyWorkPage() {
             </div>
 
             <div className="mt-4 flex gap-2">
-              <Link to={`/agent/${p.id}`} className="btn-primary flex-1">
+              <Link to={`/workspaces/${p.id}`} className="btn-primary flex-1">
                 Open
               </Link>
-              <Link to="/my-environments" className="btn-secondary">
+              <Link to="/settings/environments" className="btn-secondary">
                 Setup
               </Link>
             </div>
