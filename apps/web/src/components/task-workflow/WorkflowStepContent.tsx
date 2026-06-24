@@ -92,6 +92,8 @@ export function WorkflowStepContent({
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployPhase, setDeployPhase] = useState<DeployPipelinePhase>('deploy');
   const [deployModalError, setDeployModalError] = useState<string | null>(null);
+  const [deployFixing, setDeployFixing] = useState(false);
+  const [deployApplying, setDeployApplying] = useState(false);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const pipelineRunningRef = useRef(false);
   const jiraDraftInitializedRef = useRef(false);
@@ -190,6 +192,22 @@ export function WorkflowStepContent({
     }
   }
 
+  async function finishDeployPipeline(afterDeploy: RunDetail) {
+    if (!afterDeploy.deploy?.ok) {
+      setDeployPhase('failed');
+      const analysis = afterDeploy.deploy?.analysis;
+      setDeployModalError(
+        analysis?.summary || 'Local deploy failed. Review the step output above.',
+      );
+      return false;
+    }
+
+    const current = await completeDeployM.mutateAsync();
+    onChange(current);
+    setDeployPhase('done');
+    return true;
+  }
+
   async function runDeployPipeline() {
     if (pipelineRunningRef.current) return;
     pipelineRunningRef.current = true;
@@ -197,20 +215,85 @@ export function WorkflowStepContent({
     setDeployModalOpen(true);
     setDeployPhase('deploy');
     setDeployModalError(null);
+    setDeployFixing(false);
     setError(null);
 
     try {
       await deployM.mutateAsync();
       const afterDeploy = await pollDeployStatus();
-      if (!afterDeploy.deploy?.ok) {
-        setDeployPhase('failed');
-        setDeployModalError('Local deploy failed. Review the step output above.');
-        return;
-      }
+      await finishDeployPipeline(afterDeploy);
+    } catch (err) {
+      setDeployPhase('failed');
+      setDeployModalError(getApiErrorMessage(err));
+    } finally {
+      pipelineRunningRef.current = false;
+      setPipelineRunning(false);
+      setDeployFixing(false);
+    }
+  }
 
-      const current = await completeDeployM.mutateAsync();
-      onChange(current);
-      setDeployPhase('done');
+  async function runDeployFix() {
+    if (pipelineRunningRef.current) return;
+    pipelineRunningRef.current = true;
+    setPipelineRunning(true);
+    setDeployModalOpen(true);
+    setDeployPhase('fixing');
+    setDeployFixing(true);
+    setDeployModalError(null);
+    setError(null);
+
+    try {
+      const result = (
+        await api.post<{ detail: RunDetail; fix: { summary: string } }>(
+          `/workflow/runs/${run.id}/deploy-fix`,
+          {},
+        )
+      ).data;
+      onChange(result.detail);
+      setDeployPhase('review');
+    } catch (err) {
+      setDeployPhase('failed');
+      setDeployModalError(getApiErrorMessage(err));
+    } finally {
+      pipelineRunningRef.current = false;
+      setPipelineRunning(false);
+      setDeployFixing(false);
+    }
+  }
+
+  async function applyDeployFix(paths: string[]) {
+    if (pipelineRunningRef.current) return;
+    pipelineRunningRef.current = true;
+    setDeployApplying(true);
+    setDeployModalError(null);
+    setError(null);
+
+    try {
+      const updated = (
+        await api.post<{ detail: RunDetail }>(`/runs/${run.id}/apply`, { paths })
+      ).data.detail;
+      onChange(updated);
+      setDeployPhase('review');
+    } catch (err) {
+      setDeployModalError(getApiErrorMessage(err));
+    } finally {
+      pipelineRunningRef.current = false;
+      setDeployApplying(false);
+    }
+  }
+
+  async function redeployAfterFix() {
+    if (pipelineRunningRef.current) return;
+    pipelineRunningRef.current = true;
+    setPipelineRunning(true);
+    setDeployPhase('deploy');
+    setDeployModalError(null);
+    setError(null);
+
+    try {
+      await deployM.mutateAsync();
+      const afterDeploy = await pollDeployStatus();
+      await finishDeployPipeline(afterDeploy);
     } catch (err) {
       setDeployPhase('failed');
       setDeployModalError(getApiErrorMessage(err));
@@ -223,6 +306,8 @@ export function WorkflowStepContent({
   function closeDeployModal() {
     setDeployModalOpen(false);
     setDeployModalError(null);
+    setDeployFixing(false);
+    setDeployApplying(false);
     if (deployPhase === 'done') {
       setDeployPhase('deploy');
     }
@@ -595,7 +680,13 @@ export function WorkflowStepContent({
             container for <code className="font-mono text-xs">{project.name}</code>. After deploy
             succeeds, continue to the commit step to commit, push, and open a staging PR manually.
           </p>
-          {!detail.applied && detail.output && (
+          {!detail.applied && detail.output && detail.diffs.length > 0 && (
+            <p className="text-sm text-amber-700">
+              Review and apply the AI-proposed deploy fix above, or open the deployment modal to
+              apply and redeploy.
+            </p>
+          )}
+          {!detail.applied && detail.output && detail.diffs.length === 0 && (
             <p className="text-sm text-amber-700">
               Apply code changes in the review panel above before deploying.
             </p>
@@ -610,7 +701,10 @@ export function WorkflowStepContent({
                 type="button"
                 className="text-xs font-medium text-brand-600 hover:underline"
                 onClick={() => {
-                  setDeployPhase(detail.deploy?.ok ? 'done' : 'failed');
+                  const hasUnappliedFix = !detail.applied && (detail.diffs?.length ?? 0) > 0;
+                  setDeployPhase(
+                    detail.deploy?.ok ? 'done' : hasUnappliedFix ? 'review' : 'failed',
+                  );
                   setDeployModalOpen(true);
                 }}
               >
@@ -636,7 +730,13 @@ export function WorkflowStepContent({
             detail={detail}
             phase={deployPhase}
             error={deployModalError}
+            fixing={deployFixing}
+            applying={deployApplying}
             onClose={closeDeployModal}
+            onRetry={() => void runDeployPipeline()}
+            onProposeFix={() => void runDeployFix()}
+            onApplyFix={(paths) => void applyDeployFix(paths)}
+            onRedeploy={() => void redeployAfterFix()}
           />
         </div>
       )}

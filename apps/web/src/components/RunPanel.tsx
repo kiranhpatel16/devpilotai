@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import axios from 'axios';
 import type { RunDetail } from '@cpwork/shared';
 import { api, getApiErrorCode, getApiErrorMessage } from '../lib/api';
 import { DiffView } from './DiffView';
@@ -28,6 +29,7 @@ export function RunPanel({
   const [commitMessage, setCommitMessage] = useState('');
   const [refineText, setRefineText] = useState('');
   const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
+  const refineAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const bad = new Set(detail.diffs.filter((d) => d.error).map((d) => d.path));
@@ -57,7 +59,35 @@ export function RunPanel({
 
   // Hooks called unconditionally in a stable order every render.
   const applyM = useRunAction('apply', () => ({ paths: selected }));
-  const refineM = useRunAction('refine', () => ({ instructions: refineText }));
+  const refineM = useMutation({
+    mutationFn: async () => {
+      refineAbortRef.current?.abort();
+      const controller = new AbortController();
+      refineAbortRef.current = controller;
+      try {
+        return (
+          await api.post(
+            `/runs/${run.id}/refine`,
+            { instructions: refineText },
+            { signal: controller.signal },
+          )
+        ).data.detail as RunDetail;
+      } finally {
+        if (refineAbortRef.current === controller) {
+          refineAbortRef.current = null;
+        }
+      }
+    },
+    onMutate: () => setActionError(null),
+    onSuccess: (d) => {
+      onChange(d);
+      setRefineText('');
+    },
+    onError: (err) => {
+      if (axios.isAxiosError(err) && err.code === 'ERR_CANCELED') return;
+      setActionError({ message: getApiErrorMessage(err), code: getApiErrorCode(err) });
+    },
+  });
   const revertM = useRunAction('revert');
   const testM = useRunAction('test');
   const commitM = useRunAction('commit', () => ({ message: commitMessage }));
@@ -66,6 +96,13 @@ export function RunPanel({
 
   const isAgent = run.mode === 'agent' || run.mode === 'workflow';
   const git = detail.git;
+
+  useEffect(() => () => refineAbortRef.current?.abort(), []);
+
+  function stopRefine() {
+    refineAbortRef.current?.abort();
+    refineM.reset();
+  }
 
   return (
     <div className="card space-y-4 p-4">
@@ -79,10 +116,33 @@ export function RunPanel({
         </span>
       </div>
 
-      {detail.error && (
+      {detail.error && run.status === 'failed' && (
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700">
           <p className="font-semibold">Run failed</p>
           <p>{detail.error}</p>
+        </div>
+      )}
+
+      {(output?.validationErrors?.length || detail.error) && run.status !== 'failed' && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <p className="font-semibold">Review before apply</p>
+          <p>{detail.error || 'Some files may contain incomplete code.'}</p>
+          {output?.validationErrors?.map((msg) => (
+            <p key={msg} className="mt-1 text-xs">
+              • {msg}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {output?.validationWarnings && output.validationWarnings.length > 0 && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+          <p className="font-semibold">Suggestions</p>
+          {output.validationWarnings.map((msg) => (
+            <p key={msg} className="mt-1 text-xs">
+              • {msg}
+            </p>
+          ))}
         </div>
       )}
 
@@ -120,18 +180,26 @@ export function RunPanel({
           <label className="label">Add or change something in this implementation</label>
           <div className="flex items-start gap-2">
             <textarea
-              className="input min-h-[60px]"
+              className="input min-h-[60px] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-70"
               placeholder="e.g. also wrap the H2 in a container, and keep the existing footer links"
               value={refineText}
+              disabled={refineM.isPending}
               onChange={(e) => setRefineText(e.target.value)}
             />
-            <button
-              className="btn-secondary whitespace-nowrap"
-              disabled={refineM.isPending || !refineText.trim()}
-              onClick={() => refineM.mutate()}
-            >
-              {refineM.isPending ? 'Updating…' : 'Update changes'}
-            </button>
+            <div className="flex shrink-0 flex-col gap-2">
+              <button
+                className="btn-secondary whitespace-nowrap"
+                disabled={refineM.isPending || !refineText.trim()}
+                onClick={() => refineM.mutate()}
+              >
+                {refineM.isPending ? 'Updating…' : 'Update changes'}
+              </button>
+              {refineM.isPending && (
+                <button className="btn-danger whitespace-nowrap" onClick={stopRefine}>
+                  Stop
+                </button>
+              )}
+            </div>
           </div>
           <p className="mt-1 text-xs text-slate-400">
             Re-runs the agent with your follow-up on top of the current proposal.

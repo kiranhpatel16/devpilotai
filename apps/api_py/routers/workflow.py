@@ -12,8 +12,12 @@ from db.ai_settings import run_usage_repo
 from services.environment import resolve_environment
 from services.jira_service import get_issue_detail, post_issue_comment
 from services.ai_service import run_ai
-from services.repo_context import build_repo_context
-from services.git_service import compute_diffs, create_branch, get_status
+from services.repo_context import enrich_repo_context, build_repo_context
+from services.git_service import (
+    compute_diffs,
+    create_branch,
+    get_status,
+)
 from services.run_detail import load_detail, patch_detail, save_detail
 from services.task_plan_storage import save_task_plan, read_task_plan
 from services.ai_providers.registry import enabled_provider_info
@@ -29,6 +33,12 @@ from services.workflow import (
     step_index,
 )
 from services.deploy_service import run_local_deploy
+from services.deploy_error_service import (
+    analyze_deploy_failure,
+    build_auto_fix_proposals,
+    enrich_deploy_report,
+    gather_deploy_fix_excerpts,
+)
 from database import now_iso
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
@@ -125,7 +135,13 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict):
         run.get("userInstructions"),
         run.get("branchName"),
     ]))
-    repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
+    repo = enrich_repo_context(
+        resolved["cwd"],
+        task_text,
+        resolved["project"].get("frontendTheme"),
+        plan_markdown=detail.get("planMarkdown"),
+        prior_output=detail.get("output"),
+    )
     return {
         "project": resolved["project"],
         "cwd": resolved["cwd"],
@@ -137,6 +153,45 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict):
         "activeTheme": resolved["project"].get("frontendTheme"),
         "repoOverview": repo["overview"],
         "fileExcerpts": repo["excerpts"],
+    }
+
+
+async def _build_deploy_fix_context(
+    run: dict,
+    detail: dict,
+    resolved: dict,
+    deploy: dict | None,
+    analysis: dict,
+) -> dict:
+    """Slim AI context for deploy-fix — avoids blowing the model context window."""
+    jira = _jira_for_run(run, detail)
+    task_text = " ".join(filter(None, [
+        jira["summary"] if jira else detail.get("customTitle"),
+        analysis.get("summary"),
+        " ".join(analysis.get("errorFiles") or []),
+        run.get("branchName"),
+    ]))
+    repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
+    last_fix = (deploy or {}).get("lastFix")
+    return {
+        "project": resolved["project"],
+        "cwd": resolved["cwd"],
+        "frontendUrl": resolved["frontendUrl"],
+        "backendUrl": resolved["backendUrl"],
+        "jira": jira,
+        "jiraKey": run.get("jiraKey"),
+        "userInstructions": run.get("userInstructions"),
+        "activeTheme": resolved["project"].get("frontendTheme"),
+        "repoOverview": repo["overview"],
+        "fileExcerpts": [],
+        "mode": "deploy_fix",
+        "deployAnalysis": analysis,
+        "deployOutput": analysis.get("rawOutput") or "",
+        "approvedPlanMarkdown": detail.get("planMarkdown"),
+        "lastFailedFix": last_fix,
+        "deployFileExcerpts": gather_deploy_fix_excerpts(
+            resolved["cwd"], deploy, analysis,
+        ),
     }
 
 
@@ -393,6 +448,17 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         ai_result = await run_ai(provider, run.get("model"), ctx)
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
+        validation = ai_result.get("validation") or {}
+        blocking = validation.get("blocking") or output.get("validationErrors") or []
+        if blocking:
+            runs_repo.set_error(
+                run_id,
+                "Agent completed with quality issues (review before apply): "
+                + "; ".join(blocking[:3]),
+            )
+        else:
+            runs_repo.set_error(run_id, None)
+
         diffs = compute_diffs(resolved["cwd"], output["files"]) if output.get("files") else []
         git = await get_status(resolved["cwd"], resolved["project"]["git"]["productionBranch"])
         git["branch"] = run["branchName"]
@@ -417,8 +483,9 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
             "approvalStatus": "code_pending",
             "summary": output.get("summary") or None,
         })
-        runs_repo.set_error(run_id, None)
         return {"detail": _assemble_detail(run_id)}
+    except HttpError:
+        raise
     except Exception as err:
         runs_repo.set_error(run_id, str(err))
         patch_detail(run_id, {"approvalStatus": "failed"})
@@ -444,6 +511,67 @@ async def approve_code(run_id: str, auth: dict = Depends(get_auth)):
     return {"detail": _assemble_detail(run_id)}
 
 
+def _schedule_deploy_job(
+    run_id: str,
+    cwd: str,
+    php_bin: str,
+    docker_compose_path: str | None,
+) -> None:
+    if run_id in _deploy_tasks and not _deploy_tasks[run_id].done():
+        return
+
+    detail = load_detail(run_id)
+    deploy_patch: dict = {
+        "ranAt": now_iso(),
+        "ok": False,
+        "running": True,
+        "steps": [],
+    }
+    extra_patch: dict = {"deploy": deploy_patch}
+    if detail.get("diffs") and not detail.get("applied"):
+        extra_patch["diffs"] = []
+        extra_patch["output"] = None
+
+    patch_detail(run_id, extra_patch)
+    runs_repo.update_fields(run_id, {"status": "deploying"})
+
+    async def on_progress(report: dict) -> None:
+        patch_detail(run_id, {"deploy": report})
+
+    async def job() -> None:
+        try:
+            report = await run_local_deploy(
+                cwd,
+                php_bin,
+                docker_compose_path,
+                on_progress=on_progress,
+            )
+            if not report.get("ok"):
+                report = enrich_deploy_report(report, cwd)
+                detail = load_detail(run_id)
+                last_fix = (detail.get("deploy") or {}).get("lastFix")
+                if last_fix and last_fix.get("status") == "applied":
+                    report["lastFix"] = {**last_fix, "status": "failed", "failedAt": now_iso()}
+            patch_detail(run_id, {"deploy": report})
+            runs_repo.update_fields(run_id, {
+                "status": "deploy_ready" if report["ok"] else "deploy_failed",
+            })
+        except Exception as exc:
+            failed = enrich_deploy_report({
+                "ranAt": now_iso(),
+                "ok": False,
+                "running": False,
+                "steps": load_detail(run_id).get("deploy", {}).get("steps", []),
+                "error": str(exc),
+            }, cwd)
+            patch_detail(run_id, {"deploy": failed})
+            runs_repo.update_fields(run_id, {"status": "deploy_failed"})
+        finally:
+            _deploy_tasks.pop(run_id, None)
+
+    _deploy_tasks[run_id] = asyncio.create_task(job())
+
+
 @router.post("/runs/{run_id}/deploy")
 async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
@@ -466,46 +594,98 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     docker_compose_path = resolved["env"].get("dockerComposePath")
     cwd = resolved["cwd"]
 
-    patch_detail(run_id, {
-        "deploy": {
-            "ranAt": now_iso(),
-            "ok": False,
-            "running": True,
-            "steps": [],
-        },
-    })
-    runs_repo.update_fields(run_id, {"status": "deploying"})
-
-    async def on_progress(report: dict) -> None:
-        patch_detail(run_id, {"deploy": report})
-
-    async def job() -> None:
-        try:
-            report = await run_local_deploy(
-                cwd,
-                php_bin,
-                docker_compose_path,
-                on_progress=on_progress,
-            )
-            patch_detail(run_id, {"deploy": report})
-            runs_repo.update_fields(run_id, {
-                "status": "deploy_ready" if report["ok"] else "deploy_failed",
-            })
-        except Exception as exc:
-            failed = {
-                "ranAt": now_iso(),
-                "ok": False,
-                "running": False,
-                "steps": load_detail(run_id).get("deploy", {}).get("steps", []),
-                "error": str(exc),
-            }
-            patch_detail(run_id, {"deploy": failed})
-            runs_repo.update_fields(run_id, {"status": "deploy_failed"})
-        finally:
-            _deploy_tasks.pop(run_id, None)
-
-    _deploy_tasks[run_id] = asyncio.create_task(job())
+    _schedule_deploy_job(run_id, cwd, php_bin, docker_compose_path)
     return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/deploy-fix")
+async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    _assert_project_access(auth, run["projectId"], write=True)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] != "deploy":
+        raise HttpError.bad_request("Deploy fix is only available on the deploy step")
+
+    deploy = detail.get("deploy")
+    if deploy and deploy.get("running"):
+        raise HttpError.bad_request("Deploy is still running")
+    if deploy and deploy.get("ok"):
+        raise HttpError.bad_request("Deploy already succeeded")
+
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    cwd = resolved["cwd"]
+    analysis = analyze_deploy_failure(deploy, cwd)
+    if not analysis.get("rawOutput"):
+        raise HttpError.bad_request("No deploy error output available to fix.")
+
+    last_fix = (deploy or {}).get("lastFix")
+    auto_output = build_auto_fix_proposals(cwd, analysis)
+    fix_mode = "auto"
+    ai_result = None
+
+    if auto_output:
+        output = auto_output
+    else:
+        fix_mode = "ai"
+        provider = _pick_provider(run.get("provider"))
+        ctx = await _build_deploy_fix_context(run, detail, resolved, deploy, analysis)
+        ai_result = await run_ai(provider, run.get("model"), ctx)
+        run_usage_repo.record(run_id, ai_result["usage"])
+        output = ai_result["output"]
+
+    files = output.get("files") or []
+    if not files:
+        raise HttpError.bad_request("No file changes were proposed for the deploy error.")
+
+    from services.agent_output_validator import validate_deploy_fix_output
+    validation = validate_deploy_fix_output(cwd, output, analysis)
+    if validation["blocking"]:
+        if fix_mode == "auto":
+            raise HttpError.bad_request(
+                "Auto-fix could not resolve the deploy error: "
+                + "; ".join(validation["blocking"][:3]),
+            )
+        raise HttpError.bad_request(
+            "AI fix did not target the deploy error correctly. Try Regenerate fix. "
+            + "; ".join(validation["blocking"][:3]),
+        )
+
+    diffs = compute_diffs(cwd, files)
+    diff_errors = [d for d in diffs if d.get("error")]
+    if diff_errors:
+        raise HttpError.bad_request(
+            "Proposed fix could not be applied: "
+            + "; ".join(f"{d['path']}: {d['error']}" for d in diff_errors[:3]),
+        )
+
+    git = await get_status(cwd, resolved["project"]["git"]["productionBranch"])
+    git["branch"] = run.get("branchName")
+    fix_summary = output.get("summary") or (
+        "Auto-fixed known deploy error(s)" if fix_mode == "auto" else "AI agent proposed fixes for the deploy error"
+    )
+
+    patch_detail(run_id, {
+        "output": output,
+        "diffs": diffs,
+        "applied": False,
+        "backups": [],
+        "git": git,
+        "usage": ai_result["usage"] if ai_result else None,
+        "deploy": {**(deploy or {}), "analysis": analysis, "lastFix": {
+            "mode": fix_mode,
+            "summary": fix_summary,
+            "paths": [f["path"] for f in files],
+            "previousPaths": (last_fix or {}).get("paths"),
+            "at": now_iso(),
+            "status": "proposed",
+        }},
+    })
+
+    return {
+        "detail": _assemble_detail(run_id),
+        "fix": {"mode": fix_mode, "summary": fix_summary, "proposed": True},
+    }
 
 
 @router.post("/runs/{run_id}/complete-deploy")

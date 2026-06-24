@@ -21,6 +21,10 @@ async def _run(cmd: list[str], cwd: str) -> dict:
 async def run_tests(cwd: str, changed_paths: list[str], php_bin: str = "php") -> dict:
     steps = []
     php_files = [p for p in changed_paths if p.endswith(".php")]
+    module_test_files = [
+        p for p in changed_paths
+        if "/Test/Unit/" in p.replace("\\", "/") and p.endswith("Test.php")
+    ]
 
     # T1 — PHP lint
     if not php_files:
@@ -43,21 +47,34 @@ async def run_tests(cwd: str, changed_paths: list[str], php_bin: str = "php") ->
             "output": "\n\n".join(lint_outputs)[-4000:],
         })
 
-    # T2 — PHPUnit
-    phpunit = os.path.join(cwd, "vendor", "bin", "phpunit")
-    unit_config = os.path.join(cwd, "dev", "tests", "unit", "phpunit.xml.dist")
-    if os.path.exists(phpunit) and os.path.exists(unit_config):
-        r = await _run([phpunit, "-c", unit_config], cwd)
-        steps.append({
-            "key": "phpunit", "label": "PHPUnit (unit suite)",
-            "ok": r["ok"], "skipped": False, "output": r["output"],
-        })
+    # T2 — Module PHPUnit (when agent added module unit tests)
+    if module_test_files:
+        phpunit = os.path.join(cwd, "vendor", "bin", "phpunit")
+        for rel in module_test_files:
+            r = await _run([php_bin, phpunit, rel], cwd)
+            steps.append({
+                "key": f"phpunit_{rel.replace('/', '_')}",
+                "label": f"PHPUnit ({rel})",
+                "ok": r["ok"],
+                "skipped": False,
+                "output": r["output"],
+            })
     else:
-        steps.append({
-            "key": "phpunit", "label": "PHPUnit (unit suite)",
-            "ok": True, "skipped": True,
-            "output": "vendor/bin/phpunit or dev/tests/unit/phpunit.xml.dist not found.",
-        })
+        # T2 — Project PHPUnit suite
+        phpunit = os.path.join(cwd, "vendor", "bin", "phpunit")
+        unit_config = os.path.join(cwd, "dev", "tests", "unit", "phpunit.xml.dist")
+        if os.path.exists(phpunit) and os.path.exists(unit_config):
+            r = await _run([phpunit, "-c", unit_config], cwd)
+            steps.append({
+                "key": "phpunit", "label": "PHPUnit (unit suite)",
+                "ok": r["ok"], "skipped": False, "output": r["output"],
+            })
+        else:
+            steps.append({
+                "key": "phpunit", "label": "PHPUnit (unit suite)",
+                "ok": True, "skipped": True,
+                "output": "No module unit tests changed; project phpunit.xml.dist not found.",
+            })
 
     # T3 — DI compile (advisory)
     steps.append({

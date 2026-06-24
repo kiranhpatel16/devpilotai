@@ -80,6 +80,31 @@ export interface ProjectJiraConfig {
   assigneeFilter: string | null;
 }
 
+/** Per-project AI prompt rules (admin-managed). When absent, system defaults apply. */
+export interface ProjectAiRules {
+  id: string;
+  projectId: string;
+  implementationQualityRules: string | null;
+  magentoRules: string | null;
+  agentOutputContract: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAiRulesEditable {
+  implementationQualityRules: string;
+  magentoRules: string;
+  agentOutputContract: string;
+}
+
+export interface ProjectAiRulesSummary {
+  id: string;
+  name: string;
+  slug: string;
+  hasCustomAiRules: boolean;
+  updatedAt: string | null;
+}
+
 /** Per-user local environment for a project (the Kiran vs Bhavesh path layer). */
 export interface UserProjectEnvironment {
   id: string;
@@ -265,6 +290,10 @@ export interface AgentOutput {
   risks: string[];
   /** Free-form text answer (used by plan/ask/debug modes). */
   text: string | null;
+  /** Quality issues that block apply until fixed. */
+  validationErrors?: string[];
+  /** Suggestions (e.g. missing tests) — apply is still allowed. */
+  validationWarnings?: string[];
 }
 
 export interface AiUsage {
@@ -299,6 +328,29 @@ export interface TestStep {
   output: string;
 }
 
+export interface DeployFailureIssue {
+  kind: string;
+  message: string;
+  autoFixable?: boolean;
+  file?: string | null;
+  reportedPath?: string | null;
+  lines?: number[];
+  module?: string;
+  rawExcerpt?: string;
+}
+
+export interface DeployFailureAnalysis {
+  failedStep: string | null;
+  summary: string;
+  issues: DeployFailureIssue[];
+  /** Repository-relative paths extracted from the deploy error output. */
+  errorFiles?: string[];
+  autoFixable?: boolean;
+  /** True when AI agent can attempt a fix for this deploy failure. */
+  aiFixable?: boolean;
+  rawOutput?: string;
+}
+
 export interface TestReport {
   ranAt: string;
   ok: boolean;
@@ -306,6 +358,8 @@ export interface TestReport {
   /** True while a local deploy job is still running. */
   running?: boolean;
   error?: string | null;
+  /** Parsed diagnosis when a deploy fails (workflow deploy step). */
+  analysis?: DeployFailureAnalysis | null;
 }
 
 // ----- Git -----

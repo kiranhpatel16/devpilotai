@@ -18,6 +18,7 @@ from routers.admin_users import router as admin_users_router
 from routers.admin_projects import router as admin_projects_router
 from routers.admin_activities import router as admin_activities_router
 from routers.admin_ai_providers import router as admin_ai_providers_router
+from routers.admin_ai_rules import router as admin_ai_rules_router
 from routers.projects import router as projects_router
 from routers.jira import router as jira_router
 from routers.ai import router as ai_router
@@ -77,6 +78,7 @@ app.include_router(admin_users_router)
 app.include_router(admin_projects_router)
 app.include_router(admin_activities_router)
 app.include_router(admin_ai_providers_router)
+app.include_router(admin_ai_rules_router)
 app.include_router(ai_router)
 app.include_router(jira_router)
 app.include_router(projects_router)

@@ -154,6 +154,16 @@ CREATE TABLE IF NOT EXISTS custom_ai_providers (
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_ai_rules (
+  id                            TEXT PRIMARY KEY,
+  project_id                    TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  implementation_quality_rules  TEXT,
+  magento_rules                 TEXT,
+  agent_output_contract         TEXT,
+  created_at                    TEXT NOT NULL,
+  updated_at                    TEXT NOT NULL
+);
 """
 
 
