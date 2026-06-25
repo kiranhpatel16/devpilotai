@@ -16,7 +16,7 @@ from services.repo_context import enrich_repo_context
 from services.git_service import (
     apply_changes, capture_backups, commit_all, compute_diffs,
     create_branch, get_status, push_branch, revert_changes,
-    merge_refined_files, normalize_file_changes,
+    merge_refined_files, repair_file_changes,
 )
 from services.pr_service import create_pull_request
 from services.testing_service import run_tests
@@ -26,6 +26,7 @@ from services.agent_output_validator import (
     validate_test_fix_output,
     lint_deploy_fix_php_syntax,
     quality_error_message,
+    paths_from_blocking_errors,
 )
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
@@ -417,6 +418,7 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
             "frontendUrl": resolved["frontendUrl"],
             "backendUrl": resolved["backendUrl"],
             "mode": "agent",
+            "maxRetries": 4,
             "jira": None,
             "jiraKey": run["jiraKey"],
             "userInstructions": run["userInstructions"],
@@ -430,11 +432,13 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
         })
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
+        broken_paths = paths_from_blocking_errors(prior_blocking)
         output["files"] = merge_refined_files(
             prior_output.get("files") or [],
             output.get("files") or [],
+            broken_paths=broken_paths,
         )
-        output["files"] = normalize_file_changes(resolved["cwd"], output["files"])
+        output["files"] = repair_file_changes(resolved["cwd"], output["files"])
         post_merge_validation = validate_agent_output(resolved["cwd"], output)
         blocking = post_merge_validation["blocking"]
         warnings = post_merge_validation["warnings"]
@@ -451,6 +455,9 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
         runs_repo.set_error(run_id, quality_error_message(blocking))
         runs_repo.update_status(run_id, "awaiting_review", output.get("summary") or None)
         return {"detail": _assemble_detail(run_id)}
+    except HttpError as err:
+        runs_repo.set_error(run_id, err.message)
+        raise
     except Exception as err:
         runs_repo.set_error(run_id, str(err))
         raise

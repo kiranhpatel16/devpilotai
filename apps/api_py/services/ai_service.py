@@ -1,10 +1,15 @@
 import time
-from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output, validate_test_fix_output
+from services.agent_output_validator import (
+    validate_agent_output,
+    validate_deploy_fix_output,
+    validate_test_fix_output,
+    paths_from_blocking_errors,
+)
 from services.ai_providers.registry import get_adapter, resolve_creds
 from services.ai_providers.normalize import normalize_agent_output
 from services.prompt import build_prompt
 
-MAX_AGENT_RETRIES = 3
+MAX_AGENT_RETRIES = 5
 MAX_DEPLOY_FIX_RETRIES = 5
 VALIDATED_MODES = frozenset({"agent", "deploy_fix", "test_fix"})
 
@@ -22,17 +27,25 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
     blocking_errors: list[str] = []
     warnings: list[str] = []
 
-    max_retries = (
-        MAX_DEPLOY_FIX_RETRIES
-        if ctx.get("mode") in ("deploy_fix", "test_fix")
-        else MAX_AGENT_RETRIES
-    )
+    max_retries = ctx.get("maxRetries")
+    if max_retries is None:
+        max_retries = (
+            MAX_DEPLOY_FIX_RETRIES
+            if ctx.get("mode") in ("deploy_fix", "test_fix")
+            else (2 if ctx.get("refineInstructions") else MAX_AGENT_RETRIES)
+        )
+
+    is_refine = bool((ctx.get("refineInstructions") or "").strip())
+    original_prior = ctx.get("priorOutput")
 
     for attempt in range(max_retries + 1):
         attempt_ctx = dict(ctx)
         if blocking_errors:
             attempt_ctx["validationErrors"] = blocking_errors
-            attempt_ctx["priorOutput"] = last_output
+            # During refine, keep the original proposal in the prompt so retries
+            # still see the full file list — only auto-retries replace priorOutput.
+            if not is_refine:
+                attempt_ctx["priorOutput"] = last_output
 
         prompt = build_prompt(attempt_ctx)
         result = await adapter["chat"](creds, {
@@ -45,15 +58,26 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
         total_output_tokens += result.get("outputTokens") or 0
 
         output = normalize_agent_output(result["content"])
+        cwd = ctx.get("cwd")
         if cwd:
-            from services.git_service import normalize_file_changes
-            output["files"] = normalize_file_changes(cwd, output.get("files") or [])
+            from services.git_service import repair_file_changes, merge_refined_files
+
+            new_files = repair_file_changes(cwd, output.get("files") or [])
+            validation_errors = attempt_ctx.get("validationErrors") or []
+            merge_base = original_prior if is_refine else attempt_ctx.get("priorOutput")
+            if merge_base and ctx.get("mode") == "agent" and validation_errors:
+                new_files = merge_refined_files(
+                    merge_base.get("files") or [],
+                    new_files,
+                    broken_paths=paths_from_blocking_errors(validation_errors),
+                )
+                new_files = repair_file_changes(cwd, new_files)
+            output["files"] = new_files
         last_output = output
 
         if ctx.get("mode") not in VALIDATED_MODES:
             break
 
-        cwd = ctx.get("cwd")
         if not cwd:
             break
 

@@ -189,6 +189,14 @@ def blocking_issues(cwd: str, output: dict[str, Any]) -> list[str]:
     return validate_agent_output(cwd, output)["blocking"]
 
 
+def paths_from_blocking_errors(blocking: list[str]) -> set[str]:
+    paths: set[str] = set()
+    for err in blocking:
+        if ":" in err:
+            paths.add(err.split(":", 1)[0].strip().replace("\\", "/"))
+    return paths
+
+
 def quality_error_message(blocking: list[str]) -> str | None:
     if not blocking:
         return None
