@@ -267,7 +267,7 @@ export function DeployProgressModal({
             </div>
           )}
 
-          {(error || deploy?.error) && (
+          {(error || deploy?.error) && !(failed && analysis) && (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
               {error || deploy?.error}
             </div>
@@ -281,11 +281,6 @@ export function DeployProgressModal({
         </div>
 
         <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 px-4 py-3">
-          {(failed || phase === 'done') && (
-            <button type="button" className="btn-primary" onClick={onClose}>
-              {phase === 'done' ? 'Continue' : 'Close'}
-            </button>
-          )}
           {deployRunning && (
             <p className="mr-auto self-center text-xs text-slate-500">
               This may take several minutes. Keep this window open.

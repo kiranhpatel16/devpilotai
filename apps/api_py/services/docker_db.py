@@ -5,6 +5,8 @@ import re
 import socket
 import subprocess
 
+from services.command_output import summarize_command_output
+
 DOCKER_DB_SERVICE_NAMES = frozenset({"db", "mysql", "mariadb", "database", "postgres", "pgsql"})
 PHP_SERVICE_CANDIDATES = ("php-fpm", "php_fpm", "phpfpm", "php", "fpm", "app", "web")
 DEFAULT_CONTAINER_WORKDIR = "/var/www/html"
@@ -442,7 +444,9 @@ def _run_docker_cmd(cmd: list[str], cwd: str | None, timeout: int) -> dict:
             text=True,
             timeout=timeout,
         )
-        output = (proc.stdout + proc.stderr)[-8000:]
+        output = summarize_command_output(
+            proc.stdout, proc.stderr, ok=proc.returncode == 0,
+        )
         return {"ok": proc.returncode == 0, "output": output}
     except FileNotFoundError:
         return {"ok": False, "output": "docker CLI not found on this machine"}

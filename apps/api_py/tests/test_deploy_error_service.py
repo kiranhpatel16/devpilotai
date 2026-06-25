@@ -6,6 +6,7 @@ from services.deploy_error_service import (
     analyze_deploy_failure,
     apply_auto_fixes,
     build_auto_fix_proposals,
+    build_php_syntax_auto_fix,
     enrich_deploy_report,
     gather_deploy_fix_excerpts,
     _fix_db_schema_content,
@@ -45,6 +46,13 @@ Line: 4
 
 Element 'column', attribute 'primary': The attribute 'primary' is not allowed.
 Line: 16
+
+Verify the XML and try again.
+"""
+
+MALFORMED_DB_SCHEMA_OUTPUT = """
+Schema creation/updates:
+The XML in file "/var/www/html/app/code/Commercepundit/BocaBargoons/etc/db_schema.xml" is invalid:
 
 Verify the XML and try again.
 """
@@ -221,6 +229,41 @@ class DeployErrorServiceTests(unittest.TestCase):
         self.assertIn('<column name="item_id"/>', updated)
         self.assertEqual(updated.count('<constraint xsi:type="primary"'), 2)
         self.assertTrue(any("primary attribute" in s for s in summaries))
+
+    def test_analyze_malformed_db_schema(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Commercepundit/BocaBargoons/etc/db_schema.xml"
+            self._write_schema(
+                cwd,
+                rel,
+                (
+                    '<?xml version="1.0"?>\n'
+                    "<schema>\n"
+                    '  <table name="broken">\n'
+                    '    <column name="entity_id" />\n'
+                    "  </table>\n"
+                    '  <table name="broken">\n'
+                    '    <column name="entity_id" />\n'
+                    "</schema>\n"
+                ),
+            )
+
+            deploy = {
+                "ok": False,
+                "steps": [
+                    {
+                        "key": "setup_upgrade",
+                        "ok": False,
+                        "skipped": False,
+                        "output": MALFORMED_DB_SCHEMA_OUTPUT,
+                    },
+                ],
+            }
+            analysis = analyze_deploy_failure(deploy, cwd)
+            self.assertTrue(
+                any(i["kind"] == "db_schema_malformed" for i in analysis["issues"])
+            )
+            self.assertIn(rel, analysis["errorFiles"])
 
     def test_build_auto_fix_proposals_column_primary(self):
         with tempfile.TemporaryDirectory() as cwd:
@@ -440,6 +483,65 @@ class DeployErrorServiceTests(unittest.TestCase):
             fixed = proposal["files"][0]["content"]
             self.assertEqual(fixed.count("<resources>"), 3)
             self.assertIn('<resource ref="anonymous"/>', fixed)
+
+    def test_analyze_magento_di_compile_php_syntax_error(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Commercepundit/BocaBargoons/Model/ProductFeedBuilder.php"
+            self._write_schema(cwd, rel, "<?php\nclass ProductFeedBuilder {\n}\n")
+
+            progress = "Proxies code generation... 11%\n" * 400
+            error = (
+                f"There is an error in /var/www/html/{rel}\n"
+                "Unmatched '}'\n"
+                f"in {rel} on line 45\n"
+            )
+            output = progress + error + "#11 /var/www/html/vendor/magento/framework/Console/Cli.php\n"
+
+            deploy = {
+                "ok": False,
+                "steps": [
+                    {"key": "di_compile", "ok": False, "skipped": False, "output": output},
+                ],
+            }
+            analysis = analyze_deploy_failure(deploy, cwd)
+            self.assertNotIn("Unrecognized deploy error", analysis["summary"])
+            self.assertIn(rel, analysis["errorFiles"])
+            self.assertTrue(any(i["kind"] == "php_syntax" for i in analysis["issues"]))
+
+    def test_build_php_syntax_auto_fix_removes_extra_brace(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Vendor/Module/Model/Feed.php"
+            broken = (
+                "<?php\n"
+                "namespace Vendor\\Module\\Model;\n"
+                "class Feed {\n"
+                "    public function run() {\n"
+                "    }\n"
+                "}\n"
+                "}\n"
+            )
+            self._write_schema(cwd, rel, broken)
+
+            analysis = analyze_deploy_failure({
+                "ok": False,
+                "steps": [{
+                    "key": "di_compile",
+                    "ok": False,
+                    "skipped": False,
+                    "output": (
+                        f"There is an error in /var/www/html/{rel}\n"
+                        "Unmatched '}'\n"
+                        f"in {rel} on line 7\n"
+                    ),
+                }],
+            }, cwd)
+
+            proposal = build_php_syntax_auto_fix(cwd, analysis, php_bin="php")
+            self.assertIsNotNone(proposal)
+            fixed = proposal["files"][0]["content"]
+            from services.agent_output_validator import _lint_php_content
+            self.assertIsNone(_lint_php_content("php", fixed))
+            self.assertEqual(fixed.count("}"), 2)
 
 
 if __name__ == "__main__":

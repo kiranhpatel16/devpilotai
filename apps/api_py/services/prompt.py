@@ -12,7 +12,34 @@ Rules:
 - Common XML specifics when relevant:
   * db_schema.xml: identity= not auto_increment; never use primary= on <column> — use <constraint xsi:type="primary" referenceId="PRIMARY"> with nested <column name="..."/>; constraints use nested <column/> children (not columns= attribute).
   * webapi.xml: root <routes> with xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Webapi:etc/webapi.xsd"; every <route> must include <service> and <resources><resource ref="..."/></resources>
-- Return the smallest change set that makes deployment succeed. Add PHPUnit tests only when you change PHP classes that require them; skip tests for config/XML/CSS/JS-only fixes."""
+- Return the smallest change set that makes deployment succeed. Add PHPUnit tests only when you change PHP classes that require them; skip tests for config/XML/CSS/JS-only fixes.
+- PHP syntax/parse errors (unmatched braces, parse errors): return the ENTIRE corrected file as action=modify with "content" (full file). Do NOT use "edits" for brace/syntax fixes. Do NOT add new methods unless the syntax error requires it — fix the minimal brace/statement issue only."""
+
+DEPLOY_FIX_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
+{
+  "summary": "one sentence describing the fix",
+  "files": [
+    {
+      "path": "app/code/Vendor/Module/...",
+      "action": "create | modify | delete",
+      "reason": "why this file changes",
+      "content": "FULL file content — for action=create OR action=modify when fixing PHP syntax/parse errors",
+      "edits": [
+        { "oldString": "exact existing text", "newString": "replacement", "replaceAll": false }
+      ]
+    }
+  ],
+  "manualTestChecklist": ["Re-run local deploy"],
+  "risks": []
+}
+CRITICAL rules for deploy fixes:
+- Fix ONLY files named in the deploy error. Smallest change that makes deploy succeed.
+- PHP syntax/parse errors (unmatched }, unexpected token, parse error): action=modify with FULL corrected file in "content". Do NOT use "edits". Balance all braces. Do not add unrelated methods.
+- XML/config errors: prefer small targeted "edits" with oldString copied verbatim from the excerpt.
+- action=create: provide full "content" only.
+- action=modify with "edits": oldString must match the excerpt exactly. Never insert extra closing braces without removing matching opens.
+- Proposed PHP MUST pass php -l — invalid syntax will be rejected automatically.
+- Skip PHPUnit tests unless you change PHP class behavior (syntax-only fixes need no tests)."""
 
 IMPLEMENTATION_QUALITY_RULES = """Implementation quality (mandatory — responses violating these are REJECTED):
 - Write PRODUCTION-READY code like a senior developer using Cursor IDE. Every method must contain real executable logic.
@@ -148,6 +175,23 @@ def _validation_retry_block(ctx: dict) -> str:
     errors = ctx.get("validationErrors") or []
     if not errors:
         return ""
+    mode = ctx.get("mode")
+    if mode == "deploy_fix":
+        lines = [
+            "\n\n*** YOUR PREVIOUS FIX WAS REJECTED ***",
+            "Fix these problems in this response:",
+            *[f"- {err}" for err in errors],
+        ]
+        if any("parse error" in e.lower() or "syntax" in e.lower() or "unmatched" in e.lower() for e in errors):
+            lines.extend([
+                "\nFor PHP syntax errors:",
+                '- Return action="modify" with the FULL corrected PHP file in "content" (not "edits").',
+                "- Balance all { and }. Fix only the reported syntax issue — no new methods.",
+                "- The file must pass php -l before it can be applied.",
+            ])
+        else:
+            lines.append("\nReturn a corrected minimal fix for the deploy error only.")
+        return "\n".join(lines)
     lines = [
         "\n\n*** YOUR PREVIOUS RESPONSE WAS REJECTED ***",
         "The following problems must be fixed in this response:",
@@ -243,7 +287,18 @@ def build_prompt(ctx: dict) -> dict:
             )
         last_fix = ctx.get("lastFailedFix")
         retry_block = ""
-        if last_fix and last_fix.get("paths"):
+        prior_apply_error = (last_fix or {}).get("applyError") if last_fix else None
+        if not prior_apply_error:
+            current_last = ctx.get("deployLastFix")
+            if current_last and current_last.get("status") == "proposed":
+                prior_apply_error = current_last.get("applyError")
+        if prior_apply_error:
+            retry_block = (
+                f"\n\n*** PREVIOUS APPLY FAILED PHP SYNTAX CHECK ***\n"
+                f"{prior_apply_error}\n"
+                "Return the FULL corrected file in content (not edits). Fix brace balance only."
+            )
+        elif last_fix and last_fix.get("paths"):
             retry_block = (
                 "\n\n*** PREVIOUS FIX DID NOT WORK — DO NOT REPEAT ***\n"
                 f"Summary attempted: {last_fix.get('summary', '(none)')}\n"
@@ -251,14 +306,32 @@ def build_prompt(ctx: dict) -> dict:
                 "The deploy error below is still failing. Propose a DIFFERENT fix targeting "
                 "the file(s) in the deploy error output, not the same files unless the error still points there."
             )
+        syntax_lines = []
+        for issue in analysis.get("issues") or []:
+            if issue.get("kind") not in ("php_syntax", "php_runtime"):
+                continue
+            rel = issue.get("file")
+            if not rel:
+                continue
+            line_nums = issue.get("lines") or []
+            near = f" near line {line_nums[0]}" if line_nums else ""
+            syntax_lines.append(
+                f"- {rel}{near}: return FULL corrected file via action=modify + content (not edits)"
+            )
+        syntax_block = ""
+        if syntax_lines:
+            syntax_block = (
+                "\n\nPHP syntax fix required (minimal change, valid php -l):\n"
+                + "\n".join(syntax_lines)
+            )
         slim_common = (
             f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}"
         )
         return {
-            "system": f"{DEPLOY_FIX_RULES}\n\n{agent_output_contract}",
+            "system": f"{DEPLOY_FIX_RULES}\n\n{DEPLOY_FIX_OUTPUT_CONTRACT}",
             "user": (
                 "A local Magento deployment failed. Fix the error with minimal, targeted file changes.\n\n"
-                f"{slim_common}{plan_block}{target_block}{retry_block}\n\n"
+                f"{slim_common}{plan_block}{target_block}{retry_block}{syntax_block}\n\n"
                 f"Deploy failure summary: {analysis.get('summary', 'Unknown')}\n"
                 f"Failed step: {analysis.get('failedStep') or 'unknown'}\n"
                 f"Issues:\n{issue_lines or '(see deploy output below)'}\n\n"

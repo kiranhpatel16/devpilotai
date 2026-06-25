@@ -51,11 +51,12 @@ export function TaskHistoryPage() {
 
   function handleRestore(detail: RunDetail) {
     const { projectId, jiraKey } = detail.run;
+    const state = { restoredDetail: detail };
     if (jiraKey) {
-      navigate(`/workspaces/${projectId}/tasks/${encodeURIComponent(jiraKey)}`);
+      navigate(`/workspaces/${projectId}/tasks/${encodeURIComponent(jiraKey)}`, { state });
       return;
     }
-    navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`);
+    navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`, { state });
   }
 
   return (
