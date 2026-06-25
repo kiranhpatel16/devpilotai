@@ -82,7 +82,8 @@ IMPLEMENTATION_QUALITY_RULES = """Implementation quality (mandatory — response
 - XML must be valid Magento schema (db_schema: identity= not auto_increment; constraints use nested <column/> children).
 - Wire dependencies in etc/di.xml. Register events, webapi routes, and console commands as needed.
 - ALWAYS include PHPUnit unit tests for new/changed PHP classes under app/code/Vendor/Module/Test/Unit/.
-- Tests must instantiate the class (with mocks) and assert real behavior — not empty test bodies."""
+- Tests must instantiate the class (with mocks) and assert real behavior — not empty test bodies.
+- New files that do not exist in the repo yet MUST use action="create" with full "content" — never action="modify" with edits."""
 
 AGENT_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
 {
@@ -269,11 +270,13 @@ def build_prompt(ctx: dict) -> dict:
             )
         if prior_output:
             prior_files = "\n".join(f"- {f['action']}: {f['path']}" for f in prior_output.get("files", []))
+            prior_count = len(prior_output.get("files") or [])
             refine_block = (
                 f"\n\nYou previously proposed this change:\nSummary: {prior_output.get('summary', '')}\n"
-                f"Files:\n{prior_files}\n\nThe developer now requests an ADDITIONAL change on top of that proposal:\n"
+                f"Files ({prior_count}):\n{prior_files}\n\nThe developer now requests an ADDITIONAL change on top of that proposal:\n"
                 f"{ctx.get('refineInstructions', '')}\n\nReturn an UPDATED, COMPLETE proposal "
-                "(include every file that should change, not just the new part), following the same JSON contract and edit rules. "
+                f"(include ALL {prior_count} files from the prior proposal unless a file should be removed — "
+                "do not return a smaller partial set when fixing quality issues), following the same JSON contract and edit rules. "
                 "Replace any stub/placeholder code with full implementations."
             )
             return {

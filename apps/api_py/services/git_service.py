@@ -28,6 +28,67 @@ def _read_if_exists(full: str) -> str:
         return ""
 
 
+def normalize_file_changes(cwd: str, files: list[dict]) -> list[dict]:
+    """Fix common agent mistakes: modify on a path that does not exist yet → create."""
+    normalized: list[dict] = []
+    for change in files:
+        action = change.get("action", "modify")
+        path = change.get("path") or ""
+        if not path:
+            continue
+        if action != "modify":
+            normalized.append(change)
+            continue
+
+        full = _safe_join(cwd, path)
+        if os.path.exists(full):
+            normalized.append(change)
+            continue
+
+        content = change.get("content")
+        edits = change.get("edits") or []
+        if isinstance(content, str) and content.strip():
+            normalized.append({
+                **change,
+                "action": "create",
+                "content": content,
+                "edits": None,
+            })
+            continue
+
+        if len(edits) == 1:
+            edit = edits[0]
+            old_str = (edit.get("oldString") or "").strip()
+            new_str = edit.get("newString") or ""
+            if not old_str and new_str.strip():
+                normalized.append({
+                    **change,
+                    "action": "create",
+                    "content": new_str,
+                    "edits": None,
+                })
+                continue
+
+        normalized.append(change)
+    return normalized
+
+
+def merge_refined_files(prior_files: list[dict], new_files: list[dict]) -> list[dict]:
+    """When refine returns a partial proposal, keep prior files the agent omitted."""
+    if not prior_files:
+        return list(new_files)
+    if len(new_files) >= len(prior_files):
+        return list(new_files)
+
+    new_by_path = {f["path"]: f for f in new_files if f.get("path")}
+    merged = list(new_files)
+    for prior in prior_files:
+        path = prior.get("path")
+        if path and path not in new_by_path:
+            merged.append(prior)
+    return merged
+
+
 def resolve_new_content(cwd: str, change: dict) -> dict:
     action = change.get("action", "modify")
     if action == "delete":
