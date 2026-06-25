@@ -204,6 +204,31 @@ def _excerpts_block(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+def _validation_fix_hints(errors: list[str]) -> str:
+    hints: list[str] = []
+    missing_file = [e for e in errors if "file does not exist" in e.lower()]
+    stub_file = [e for e in errors if "stub/placeholder" in e.lower()]
+    stub_edit = [e for e in errors if "placeholder comments" in e.lower()]
+    if missing_file:
+        paths = sorted({e.split(":")[0].strip() for e in missing_file if ":" in e})
+        hints.append(
+            "Files that do not exist yet MUST use action=\"create\" with full \"content\" "
+            "(never action=\"modify\" with edits): " + ", ".join(paths)
+        )
+    if stub_file or stub_edit:
+        hints.append(
+            "Replace stub/placeholder code with real PHP: constructor DI, service calls, "
+            "return values, and PHPUnit tests with mocks and assertions."
+        )
+        hints.append(
+            "For stub files, prefer action=\"create\" with the complete corrected file in "
+            "\"content\" instead of small comment-only edits."
+        )
+    if not hints:
+        return ""
+    return "\n".join(f"- {h}" for h in hints)
+
+
 def _validation_retry_block(ctx: dict) -> str:
     errors = ctx.get("validationErrors") or []
     if not errors:
@@ -226,6 +251,7 @@ def _validation_retry_block(ctx: dict) -> str:
             fix_kind = "test" if mode == "test_fix" else "deploy"
             lines.append(f"\nReturn a corrected minimal fix for the {fix_kind} error only.")
         return "\n".join(lines)
+    fix_hints = _validation_fix_hints(errors)
     lines = [
         "\n\n*** YOUR PREVIOUS RESPONSE WAS REJECTED ***",
         "The following problems must be fixed in this response:",
@@ -235,7 +261,10 @@ def _validation_retry_block(ctx: dict) -> str:
         "- NO placeholder comments or duplicate comment lines",
         "- PHPUnit Test/Unit classes for each new/changed PHP class",
         "- For stub files, prefer action=create with full file content OR replace entire methods in edits",
+        "- New files that do not exist in the repo MUST use action=create with full content",
     ]
+    if fix_hints:
+        lines.extend(["\nTargeted fixes required:", fix_hints])
     return "\n".join(lines)
 
 
@@ -271,17 +300,38 @@ def build_prompt(ctx: dict) -> dict:
         if prior_output:
             prior_files = "\n".join(f"- {f['action']}: {f['path']}" for f in prior_output.get("files", []))
             prior_count = len(prior_output.get("files") or [])
-            refine_block = (
-                f"\n\nYou previously proposed this change:\nSummary: {prior_output.get('summary', '')}\n"
-                f"Files ({prior_count}):\n{prior_files}\n\nThe developer now requests an ADDITIONAL change on top of that proposal:\n"
-                f"{ctx.get('refineInstructions', '')}\n\nReturn an UPDATED, COMPLETE proposal "
-                f"(include ALL {prior_count} files from the prior proposal unless a file should be removed — "
-                "do not return a smaller partial set when fixing quality issues), following the same JSON contract and edit rules. "
-                "Replace any stub/placeholder code with full implementations."
-            )
+            refine_instructions = (ctx.get("refineInstructions") or "").strip()
+            validation_errors = ctx.get("validationErrors") or []
+            is_quality_retry = bool(validation_errors) and not refine_instructions
+
+            if is_quality_retry:
+                prior_block = (
+                    f"\n\nYour previous response was rejected due to quality issues.\n"
+                    f"Summary: {prior_output.get('summary', '')}\n"
+                    f"Files ({prior_count}):\n{prior_files}\n\n"
+                    f"Return a CORRECTED, COMPLETE proposal with ALL {prior_count} files "
+                    "(do not return a smaller partial set). Fix every validation error below. "
+                    "Replace stub/placeholder code with full implementations."
+                )
+                user_intro = (
+                    "Fix the rejected implementation for the following task. "
+                    "Return production-ready code for every file in the proposal."
+                )
+            else:
+                prior_block = (
+                    f"\n\nYou previously proposed this change:\nSummary: {prior_output.get('summary', '')}\n"
+                    f"Files ({prior_count}):\n{prior_files}\n\n"
+                    f"The developer now requests an ADDITIONAL change on top of that proposal:\n"
+                    f"{refine_instructions}\n\nReturn an UPDATED, COMPLETE proposal "
+                    f"(include ALL {prior_count} files from the prior proposal unless a file should be removed — "
+                    "do not return a smaller partial set when fixing quality issues), following the same JSON contract "
+                    "and edit rules. Replace any stub/placeholder code with full implementations."
+                )
+                user_intro = "Refine the implementation for the following task."
+
             return {
                 "system": f"{magento_rules}\n\n{agent_output_contract}",
-                "user": f"Refine the implementation for the following task.\n\n{common}{plan_block}{refine_block}{validation_block}",
+                "user": f"{user_intro}\n\n{common}{plan_block}{prior_block}{validation_block}",
                 "jsonMode": True,
             }
         return {

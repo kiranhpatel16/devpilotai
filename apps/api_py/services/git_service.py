@@ -28,6 +28,67 @@ def _read_if_exists(full: str) -> str:
         return ""
 
 
+def _looks_like_full_php_file(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    if "<?php" in text:
+        return True
+    return "namespace " in text and ("class " in text or "interface " in text)
+
+
+def _synthesize_content_from_edits(edits: list[dict]) -> str | None:
+    if not edits:
+        return None
+
+    for edit in reversed(edits):
+        new_str = edit.get("newString") or ""
+        if _looks_like_full_php_file(new_str):
+            return new_str
+
+    content = ""
+    for edit in edits:
+        old_str = edit.get("oldString") or ""
+        new_str = edit.get("newString") or ""
+        if not old_str:
+            content = new_str if not content else content + new_str
+        elif content and old_str in content:
+            if edit.get("replaceAll"):
+                content = content.replace(old_str, new_str)
+            else:
+                content = content.replace(old_str, new_str, 1)
+
+    if _looks_like_full_php_file(content):
+        return content
+
+    largest = max(((edit.get("newString") or "") for edit in edits), key=len, default="")
+    if _looks_like_full_php_file(largest):
+        return largest
+    return None
+
+
+def _convert_missing_modify_to_create(change: dict) -> dict | None:
+    content = change.get("content")
+    if isinstance(content, str) and content.strip():
+        return {
+            **change,
+            "action": "create",
+            "content": content,
+            "edits": None,
+        }
+
+    edits = change.get("edits") or []
+    synthesized = _synthesize_content_from_edits(edits)
+    if synthesized:
+        return {
+            **change,
+            "action": "create",
+            "content": synthesized,
+            "edits": None,
+        }
+    return None
+
+
 def normalize_file_changes(cwd: str, files: list[dict]) -> list[dict]:
     """Fix common agent mistakes: modify on a path that does not exist yet → create."""
     normalized: list[dict] = []
@@ -45,47 +106,60 @@ def normalize_file_changes(cwd: str, files: list[dict]) -> list[dict]:
             normalized.append(change)
             continue
 
-        content = change.get("content")
-        edits = change.get("edits") or []
-        if isinstance(content, str) and content.strip():
-            normalized.append({
-                **change,
-                "action": "create",
-                "content": content,
-                "edits": None,
-            })
+        converted = _convert_missing_modify_to_create(change)
+        if converted:
+            normalized.append(converted)
             continue
-
-        if len(edits) == 1:
-            edit = edits[0]
-            old_str = (edit.get("oldString") or "").strip()
-            new_str = edit.get("newString") or ""
-            if not old_str and new_str.strip():
-                normalized.append({
-                    **change,
-                    "action": "create",
-                    "content": new_str,
-                    "edits": None,
-                })
-                continue
 
         normalized.append(change)
     return normalized
 
 
-def merge_refined_files(prior_files: list[dict], new_files: list[dict]) -> list[dict]:
-    """When refine returns a partial proposal, keep prior files the agent omitted."""
+def repair_file_changes(cwd: str, files: list[dict]) -> list[dict]:
+    """Auto-repair structural agent mistakes before validation."""
+    repaired = normalize_file_changes(cwd, files)
+    out: list[dict] = []
+    for change in repaired:
+        if change.get("action") != "modify":
+            out.append(change)
+            continue
+
+        full = _safe_join(cwd, change["path"])
+        if os.path.exists(full):
+            out.append(change)
+            continue
+
+        converted = _convert_missing_modify_to_create(change)
+        out.append(converted if converted else change)
+    return out
+
+
+def merge_refined_files(
+    prior_files: list[dict],
+    new_files: list[dict],
+    *,
+    broken_paths: set[str] | None = None,
+) -> list[dict]:
+    """When refine returns a partial proposal, keep prior files the agent omitted.
+
+    If broken_paths is set, do not resurrect prior versions of files that still
+    had validation errors — the agent must return corrected versions explicitly.
+    """
     if not prior_files:
         return list(new_files)
     if len(new_files) >= len(prior_files):
         return list(new_files)
 
+    broken = {p.replace("\\", "/") for p in (broken_paths or set())}
     new_by_path = {f["path"]: f for f in new_files if f.get("path")}
     merged = list(new_files)
     for prior in prior_files:
         path = prior.get("path")
-        if path and path not in new_by_path:
-            merged.append(prior)
+        if not path or path in new_by_path:
+            continue
+        if path in broken:
+            continue
+        merged.append(prior)
     return merged
 
 

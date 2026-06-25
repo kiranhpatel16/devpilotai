@@ -1,6 +1,7 @@
 import httpx
 from urllib.parse import quote
 from lib.errors import HttpError
+from services.ai_providers.openai_compatible import _network_error_message, _post_with_retries
 
 FALLBACK_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -20,10 +21,21 @@ async def _chat(creds: dict, req: dict) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=body, headers={"Content-Type": "application/json"})
+        resp = await _post_with_retries(
+            url,
+            json=body,
+            headers={"Content-Type": "application/json"},
+            provider_id="cloud_ai",
+        )
+    except HttpError:
+        raise
     except Exception as e:
-        raise HttpError(502, "Could not reach Gemini API", "ai_unreachable", {"cause": str(e)})
+        raise HttpError(
+            502,
+            _network_error_message("cloud_ai", e),
+            "ai_unreachable",
+            {"cause": str(e), "type": type(e).__name__},
+        )
 
     if resp.status_code in (401, 403):
         raise HttpError(502, "Gemini authentication failed. Check the API key.", "ai_auth_failed")

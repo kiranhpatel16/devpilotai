@@ -2,7 +2,11 @@ import os
 import tempfile
 import unittest
 
-from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output
+from services.agent_output_validator import (
+    validate_agent_output,
+    validate_deploy_fix_output,
+    paths_from_blocking_errors,
+)
 
 
 class AgentOutputValidatorTests(unittest.TestCase):
@@ -95,6 +99,20 @@ class AgentOutputValidatorTests(unittest.TestCase):
             result = validate_deploy_fix_output(cwd, output, analysis, php_bin="php")
             self.assertTrue(result["blocking"])
             self.assertTrue(any("parse error" in b.lower() or "syntax" in b.lower() for b in result["blocking"]))
+
+    def test_paths_from_blocking_errors(self):
+        blocking = [
+            "app/code/Vendor/Module/Model/Foo.php: contains stub/placeholder code",
+            "app/code/Vendor/Module/Api/Bar.php: Cannot apply edits: file does not exist (app/code/Vendor/Module/Api/Bar.php)",
+        ]
+        paths = paths_from_blocking_errors(blocking)
+        self.assertEqual(
+            paths,
+            {
+                "app/code/Vendor/Module/Model/Foo.php",
+                "app/code/Vendor/Module/Api/Bar.php",
+            },
+        )
 
 
 if __name__ == "__main__":
