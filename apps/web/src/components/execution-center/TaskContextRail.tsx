@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { JiraIssueDetail } from '@cpwork/shared';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { resolveAcceptanceCriteria } from '../../lib/parseAcceptanceCriteria';
 import { AcceptanceCriteriaPanel } from './AcceptanceCriteriaPanel';
 import { AttachmentsPanel } from './AttachmentsPanel';
 import { TaskDetailsPanel } from './TaskDetailsPanel';
@@ -21,7 +22,12 @@ export function TaskContextRail({
 }: TaskContextRailProps) {
   const [open, setOpen] = useState(!defaultCollapsed);
   const attachments = issue?.attachments ?? [];
-  const hasContent = issue?.description || customTitle || attachments.length > 0;
+  const acceptanceCriteria = resolveAcceptanceCriteria(issue?.description);
+  const hasContent =
+    issue?.description ||
+    customTitle ||
+    attachments.length > 0 ||
+    acceptanceCriteria.length > 0;
 
   if (!hasContent && !showAcceptance) return null;
 
@@ -48,7 +54,7 @@ export function TaskContextRail({
             expanded
           />
           <AttachmentsPanel attachments={attachments} />
-          {showAcceptance && <AcceptanceCriteriaPanel />}
+          {showAcceptance && <AcceptanceCriteriaPanel items={acceptanceCriteria} />}
         </div>
       )}
     </div>

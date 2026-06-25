@@ -4,7 +4,7 @@ import { X } from 'lucide-react';
 import { isAdminRole } from '@cpwork/shared';
 import { useAuth } from '../../auth/AuthContext';
 import { api } from '../../lib/api';
-import { FOOTER_NAV, MAIN_NAV } from './navConfig';
+import { MAIN_NAV } from './navConfig';
 
 function navClass({ isActive }: { isActive: boolean }) {
   return [
@@ -32,7 +32,6 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
   });
 
   const credits = creditsQ.data;
-  const footerItems = FOOTER_NAV.filter((item) => !item.adminOnly || admin);
 
   const content = (
     <div className="flex h-full flex-col">
@@ -60,7 +59,9 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
               </p>
             )}
             <div className="space-y-0.5">
-              {section.items.map((item) => (
+              {section.items
+                .filter((item) => !item.adminOnly || admin)
+                .map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
@@ -75,23 +76,6 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
             </div>
           </div>
         ))}
-
-        <div className="border-t border-neutral-800 pt-4">
-          <div className="space-y-0.5">
-            {footerItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className={navClass}
-                onClick={onClose}
-              >
-                <item.icon className="h-4 w-4 shrink-0" />
-                <span>{item.label}</span>
-              </NavLink>
-            ))}
-          </div>
-        </div>
       </nav>
 
       <div className="border-t border-neutral-800 p-4">

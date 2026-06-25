@@ -33,6 +33,11 @@ export const MAIN_NAV: NavSection[] = [
       { label: 'Dashboard', to: '/', icon: LayoutDashboard, end: true },
       { label: 'Workspaces', to: '/workspaces', icon: FolderKanban },
       { label: 'History', to: '/tasks/history', icon: History },
+      { label: 'Reports', to: '/reports', icon: BarChart3 },
+      { label: 'Users', to: '/settings/users', icon: Users, adminOnly: true },
+      { label: 'AI Providers', to: '/settings/ai-providers', icon: Cpu, adminOnly: true },
+      { label: 'AI Rules', to: '/settings/ai-rules', icon: Bot, adminOnly: true },
+      { label: 'Projects', to: '/settings/projects', icon: FolderGit2, adminOnly: true },
     ],
   },
   {
@@ -43,14 +48,6 @@ export const MAIN_NAV: NavSection[] = [
       { label: 'Coding Standards', to: '/knowledge/standards', icon: BookOpen },
     ],
   },
-];
-
-export const FOOTER_NAV: NavItem[] = [
-  { label: 'Reports', to: '/reports', icon: BarChart3 },
-  { label: 'Users', to: '/settings/users', icon: Users, adminOnly: true },
-  { label: 'AI Providers', to: '/settings/ai-providers', icon: Cpu, adminOnly: true },
-  { label: 'AI Rules', to: '/settings/ai-rules', icon: Bot, adminOnly: true },
-  { label: 'Projects', to: '/settings/projects', icon: FolderGit2, adminOnly: true },
 ];
 
 export const AGENT_DEFINITIONS = [

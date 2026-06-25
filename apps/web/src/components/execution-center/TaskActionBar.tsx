@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { RunDetail } from '@cpwork/shared';
 import { ArrowLeft, ExternalLink, MoreVertical, Pause, Play, XCircle } from 'lucide-react';
 import { StatusBadge } from '../ui/StatusBadge';
-import { taskAccent, taskAccentHover, taskBtnDanger, taskBtnGhost, taskBtnPrimary, taskHeading, taskIconBtn, taskMuted } from './taskStyles';
+import { taskAccent, taskAccentHover, taskBtnDanger, taskBtnGhost, taskBtnPrimary, taskIconBtn, taskMuted } from './taskStyles';
 
 interface TaskActionBarProps {
   projectId: string;
@@ -64,9 +64,10 @@ export function TaskActionBar({
   const showStart = !detail && canStart;
   const active = detail && !isCancelled && detail.run.status !== 'done';
 
+  const showQuickLinks = jiraUrl || onStartCustom || onShowHistory;
+
   return (
-    <div className="space-y-3">
-      {/* Top toolbar — matches reference: back + key + badge | actions */}
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <Link
@@ -100,6 +101,34 @@ export function TaskActionBar({
             }
             dot
           />
+          {showQuickLinks && (
+            <div className={`flex flex-wrap items-center gap-3 text-xs ${taskMuted}`}>
+              {jiraUrl && (
+                <a
+                  href={jiraUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`inline-flex items-center gap-1 ${taskAccent} hover:underline`}
+                >
+                  Open in Jira <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+              {onStartCustom && (
+                <button
+                  type="button"
+                  className={taskAccentHover}
+                  onClick={onStartCustom}
+                >
+                  + New custom task
+                </button>
+              )}
+              {onShowHistory && (
+                <button type="button" className={taskAccentHover} onClick={onShowHistory}>
+                  View history
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -154,38 +183,11 @@ export function TaskActionBar({
         </div>
       </div>
 
-      {/* Title + Jira link */}
       {title && (
-        <h1 className={taskHeading}>{title}</h1>
+        <h1 className="text-lg font-semibold leading-snug text-slate-900 line-clamp-2 dark:text-white">
+          {title}
+        </h1>
       )}
-      {jiraUrl && (
-        <a
-          href={jiraUrl}
-          target="_blank"
-          rel="noreferrer"
-          className={`inline-flex items-center gap-1 text-sm ${taskAccent} hover:underline`}
-        >
-          Open in Jira <ExternalLink className="h-3.5 w-3.5" />
-        </a>
-      )}
-
-      {/* Secondary links (replaces removed sidebar) */}
-      <div className={`flex flex-wrap items-center gap-4 text-xs ${taskMuted}`}>
-        {onStartCustom && (
-          <button
-            type="button"
-            className={taskAccentHover}
-            onClick={onStartCustom}
-          >
-            + New custom task
-          </button>
-        )}
-        {onShowHistory && (
-          <button type="button" className={taskAccentHover} onClick={onShowHistory}>
-            View history
-          </button>
-        )}
-      </div>
     </div>
   );
 }

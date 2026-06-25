@@ -385,7 +385,7 @@ function TaskExecutionCenterPageInner() {
   return (
     <div className="space-y-4">
       <section className="min-w-0 space-y-4">
-        <div className={`${taskCard} space-y-4 p-5`}>
+        <div className={`${taskCard} space-y-2 px-4 py-3`}>
           <TaskActionBar
             projectId={projectId}
             detail={detail}

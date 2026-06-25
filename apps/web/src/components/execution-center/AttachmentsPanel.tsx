@@ -10,11 +10,11 @@ export function AttachmentsPanel({ attachments }: AttachmentsPanelProps) {
   if (attachments.length === 0) return null;
 
   return (
-    <div className={taskPanel}>
+    <div className={`${taskPanel} shrink-0`}>
       <header className={taskPanelHeader}>
         <h3 className={taskTitle}>Attachments ({attachments.length})</h3>
       </header>
-      <ul className="grid gap-2 p-3 sm:grid-cols-2">
+      <ul className="grid gap-2 p-4 sm:grid-cols-2">
         {attachments.map((a) => (
           <li key={a.id}>
             <a

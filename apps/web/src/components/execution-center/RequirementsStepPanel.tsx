@@ -5,13 +5,14 @@ import { ArrowRight, Loader2 } from 'lucide-react';
 import { getApiErrorMessage } from '../../lib/api';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { advanceToPlanAndGenerate, isEarlyWorkflowStep } from '../../lib/workflowAdvance';
+import { resolveAcceptanceCriteria } from '../../lib/parseAcceptanceCriteria';
 import { AcceptanceCriteriaPanel } from './AcceptanceCriteriaPanel';
 import { AttachmentsPanel } from './AttachmentsPanel';
 import { BranchSetupPanel } from './BranchSetupPanel';
 import { ProgressStrip } from './ProgressStrip';
 import { loadStoredNotes, RequirementNotesPanel } from './RequirementNotesPanel';
 import { TaskDetailsPanel } from './TaskDetailsPanel';
-import { taskBtnPrimary, taskDivider, taskInput, taskMuted, taskStrong, taskSurface } from './taskStyles';
+import { taskBtnPrimary, taskInput, taskMuted, taskStrong, taskSurface } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
 
 interface RequirementsStepPanelProps {
@@ -93,6 +94,10 @@ export function RequirementsStepPanel({
   useWorkflowBusy('generate-plan', generateM.isPending, 'Generating plan…');
 
   const activeProvider = providers.find((p) => p.id === provider) ?? providers[0];
+  const acceptanceCriteria = resolveAcceptanceCriteria(
+    issue?.description,
+    wf?.customRequirements,
+  );
   const canGenerate =
     !!detail &&
     earlyStep &&
@@ -100,12 +105,31 @@ export function RequirementsStepPanel({
     !!provider &&
     !!(model || activeProvider?.defaultModel);
 
-  return (
-    <div className="space-y-4">
-      <ProgressStrip detail={detail} preStart={preStart} />
+  const showGenerateFooter = !!(detail && earlyStep);
+  const columnScrollMax = showGenerateFooter
+    ? 'lg:max-h-[calc(100vh-21rem)]'
+    : 'lg:max-h-[calc(100vh-18rem)]';
+  const columnClass = [
+    'flex flex-col gap-4',
+    columnScrollMax,
+    'lg:overflow-y-auto lg:overscroll-y-contain',
+    showGenerateFooter ? 'pb-6' : 'pb-4',
+  ].join(' ');
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-4">
+  return (
+    <div className="flex min-h-0 flex-col gap-3">
+      <div className="shrink-0 space-y-2">
+        <ProgressStrip detail={detail} preStart={preStart} />
+        {preStart && (
+          <p className={`text-sm ${taskMuted}`}>
+            Use <strong className={taskStrong}>Start Task</strong> in the header to configure
+            branch and generate a plan.
+          </p>
+        )}
+      </div>
+
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-2 lg:items-start">
+        <div className={`${columnClass} lg:pr-2`}>
           <TaskDetailsPanel
             issue={issue}
             customTitle={customTitle || wf?.customTitle || undefined}
@@ -115,10 +139,10 @@ export function RequirementsStepPanel({
             expanded
           />
           <AttachmentsPanel attachments={attachments} />
-          <AcceptanceCriteriaPanel />
+          <AcceptanceCriteriaPanel items={acceptanceCriteria} />
         </div>
 
-        <div className="space-y-4">
+        <div className={`${columnClass} lg:pl-2`}>
           <RequirementNotesPanel
             runId={detail?.run.id}
             currentStep={wf?.currentStep}
@@ -173,15 +197,8 @@ export function RequirementsStepPanel({
         </div>
       </div>
 
-      {preStart && (
-        <p className={`text-center text-sm ${taskMuted}`}>
-          Use <strong className={taskStrong}>Start Task</strong> in the header to configure
-          branch and generate a plan.
-        </p>
-      )}
-
-      {detail && earlyStep && (
-        <div className={`flex justify-end border-t ${taskDivider} pt-4`}>
+      {showGenerateFooter && (
+        <div className="sticky bottom-0 z-10 mt-1 flex shrink-0 justify-end border-t border-slate-200 bg-white/95 py-3 backdrop-blur-sm dark:border-neutral-800/60 dark:bg-[#0a0a0a]/95">
           <button
             type="button"
             className={taskBtnPrimary}
