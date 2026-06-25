@@ -26,16 +26,18 @@ export function TaskDetailsPanel({
   const labels = issue?.labels ?? [];
 
   return (
-    <div className={taskPanel}>
-      <header className={taskPanelHeader}>
+    <div className={`${taskPanel} flex min-h-0 flex-col`}>
+      <header className={`${taskPanelHeader} shrink-0`}>
         <h3 className={taskTitle}>Requirements</h3>
       </header>
-      <div className="space-y-3 p-4">
+      <div
+        className={[
+          'min-h-0 flex-1 space-y-3 overflow-y-auto p-4',
+          expanded ? 'max-h-[400px]' : 'max-h-48',
+        ].join(' ')}
+      >
         <div
-          className={[
-            `${taskSurface} px-3 py-3 text-sm ${taskBody} whitespace-pre-wrap`,
-            expanded ? 'max-h-none' : 'max-h-48 overflow-y-auto',
-          ].join(' ')}
+          className={`${taskSurface} px-3 py-3 text-sm ${taskBody} whitespace-pre-wrap`}
         >
           {description}
         </div>

@@ -104,7 +104,7 @@ export function RequirementNotesPanel({
           Add Magento, Hyva, or client-specific context for the AI agents.
         </p>
         <textarea
-          className={`${taskInput} min-h-[140px] resize-y`}
+          className={`${taskInput} max-h-48 min-h-[120px] resize-y overflow-y-auto`}
           placeholder="e.g. Use Tailwind utilities only, follow existing module patterns…"
           value={notes}
           onChange={(e) => handleChange(e.target.value)}
