@@ -5,6 +5,7 @@ from services.ai_providers.normalize import normalize_agent_output
 from services.prompt import build_prompt
 
 MAX_AGENT_RETRIES = 3
+MAX_DEPLOY_FIX_RETRIES = 5
 VALIDATED_MODES = frozenset({"agent", "deploy_fix"})
 
 
@@ -21,7 +22,9 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
     blocking_errors: list[str] = []
     warnings: list[str] = []
 
-    for attempt in range(MAX_AGENT_RETRIES + 1):
+    max_retries = MAX_DEPLOY_FIX_RETRIES if ctx.get("mode") == "deploy_fix" else MAX_AGENT_RETRIES
+
+    for attempt in range(max_retries + 1):
         attempt_ctx = dict(ctx)
         if blocking_errors:
             attempt_ctx["validationErrors"] = blocking_errors
@@ -48,7 +51,13 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
             break
 
         validation = (
-            validate_deploy_fix_output(cwd, output, ctx.get("deployAnalysis") or {})
+            validate_deploy_fix_output(
+                cwd,
+                output,
+                ctx.get("deployAnalysis") or {},
+                php_bin=ctx.get("phpBin") or "php",
+                docker_compose_path=ctx.get("dockerComposePath"),
+            )
             if ctx.get("mode") == "deploy_fix"
             else validate_agent_output(cwd, output)
         )
@@ -58,7 +67,7 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
         if not blocking_errors:
             break
 
-        if attempt < MAX_AGENT_RETRIES:
+        if attempt < max_retries:
             continue
 
     latency_ms = int((time.time() - started) * 1000)

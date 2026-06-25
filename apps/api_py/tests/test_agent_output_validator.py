@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from services.agent_output_validator import validate_agent_output
+from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output
 
 
 class AgentOutputValidatorTests(unittest.TestCase):
@@ -72,6 +72,29 @@ class AgentOutputValidatorTests(unittest.TestCase):
             result = validate_agent_output(cwd, output)
             self.assertEqual(result["blocking"], [])
             self.assertTrue(any("PHPUnit" in w for w in result["warnings"]))
+
+    def test_deploy_fix_rejects_invalid_php_syntax(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Vendor/Module/Model/Broken.php"
+            full = os.path.join(cwd, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fp:
+                fp.write("<?php\nclass Broken {\n    public function run() {\n    }\n}\n")
+
+            output = {
+                "files": [{
+                    "path": rel,
+                    "action": "modify",
+                    "content": "<?php\nclass Broken {\n    public function run() {\n    }\n}\n}\n",
+                }],
+            }
+            analysis = {
+                "errorFiles": [rel],
+                "issues": [{"kind": "php_syntax", "file": rel, "lines": [5]}],
+            }
+            result = validate_deploy_fix_output(cwd, output, analysis, php_bin="php")
+            self.assertTrue(result["blocking"])
+            self.assertTrue(any("parse error" in b.lower() or "syntax" in b.lower() for b in result["blocking"]))
 
 
 if __name__ == "__main__":

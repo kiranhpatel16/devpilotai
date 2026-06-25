@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AiProviderInfo,
@@ -31,9 +31,14 @@ interface ProjectDetail {
   myEnvironment: UserProjectEnvironment | null;
 }
 
+type WorkflowRestoreLocationState = {
+  restoredDetail?: RunDetail;
+};
+
 export function TaskExecutionCenterPage() {
   const { projectId = '', taskKey: taskKeyParam = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { setBranchName, setProjectName } = useExecution();
@@ -218,17 +223,41 @@ export function TaskExecutionCenterPage() {
     }
   }
 
-  function handleRestore(restored: RunDetail) {
+  function applyRestoredDetail(restored: RunDetail) {
     setDetail(restored);
     setShowHistory(false);
+    if (restored.run.jiraKey) {
+      setSelectedKey(restored.run.jiraKey);
+      setCustom(false);
+    } else {
+      setCustom(true);
+      setCustomTitle(restored.workflow?.customTitle || '');
+    }
+    if (restored.workflow?.currentStep) {
+      setWorkflowTab(getTabForStep(restored.workflow.currentStep));
+    }
+  }
+
+  function handleRestore(restored: RunDetail) {
+    applyRestoredDetail(restored);
     if (restored.run.jiraKey) {
       navigate(`/workspaces/${projectId}/tasks/${encodeURIComponent(restored.run.jiraKey)}`);
     } else {
       navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`);
-      setCustomTitle(restored.workflow?.customTitle || '');
     }
     queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
   }
+
+  useEffect(() => {
+    const restored = (location.state as WorkflowRestoreLocationState | null)?.restoredDetail;
+    if (!restored || restored.run.projectId !== projectId) return;
+
+    applyRestoredDetail(restored);
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+    queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
+    // Only apply navigation state once on entry from Task History (or similar).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const providers = providersQ.data ?? [];
   const noProviders = providersQ.isSuccess && providers.length === 0;

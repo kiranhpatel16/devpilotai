@@ -19,7 +19,11 @@ from services.git_service import (
 )
 from services.pr_service import create_pull_request
 from services.testing_service import run_tests
-from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output
+from services.agent_output_validator import (
+    validate_agent_output,
+    validate_deploy_fix_output,
+    lint_deploy_fix_php_syntax,
+)
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
 from services.ai_providers.registry import enabled_provider_info
@@ -250,7 +254,11 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
     )
     if is_deploy_fix:
         validation_errors = validate_deploy_fix_output(
-            resolved["cwd"], detail["output"], deploy.get("analysis") or {},
+            resolved["cwd"],
+            detail["output"],
+            deploy.get("analysis") or {},
+            php_bin=resolved["env"].get("phpBin") or "php",
+            docker_compose_path=resolved["env"].get("dockerComposePath"),
         )
     else:
         validation_errors = validate_agent_output(resolved["cwd"], detail["output"])
@@ -267,12 +275,37 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
             {"errors": validation_errors["blocking"], "warnings": validation_errors["warnings"]},
         )
 
+    applied_paths = body.paths or [f["path"] for f in detail["output"]["files"]]
+    if is_deploy_fix:
+        php_bin = resolved["env"].get("phpBin") or "php"
+        syntax_errors = lint_deploy_fix_php_syntax(
+            resolved["cwd"], php_bin, detail["output"]["files"], applied_paths,
+            docker_compose_path=resolved["env"].get("dockerComposePath"),
+        )
+        if syntax_errors:
+            if deploy:
+                patch_detail(run_id, {
+                    "deploy": {
+                        **deploy,
+                        "lastFix": {
+                            **(deploy.get("lastFix") or {}),
+                            "applyError": "; ".join(syntax_errors[:3]),
+                        },
+                    },
+                })
+            raise HttpError(
+                422,
+                "Cannot apply deploy fix — PHP syntax check failed. Regenerate fix. "
+                + "; ".join(syntax_errors[:3]),
+                "deploy_fix_syntax_error",
+                {"errors": syntax_errors},
+            )
+
     backups = capture_backups(resolved["cwd"], detail["output"]["files"], body.paths)
     apply_changes(resolved["cwd"], detail["output"]["files"], body.paths)
     git = await get_status(resolved["cwd"], resolved["project"]["git"]["productionBranch"])
     git["branch"] = run["branchName"]
 
-    applied_paths = body.paths or [f["path"] for f in detail["output"]["files"]]
     test_report = await run_tests(
         resolved["cwd"], applied_paths, resolved["env"].get("phpBin") or "php",
     )

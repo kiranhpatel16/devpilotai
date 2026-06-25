@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from services.prompt_budget import (
@@ -63,6 +64,14 @@ ERROR_ABS_PATH_RE = re.compile(
 )
 PHP_ERROR_IN_RE = re.compile(
     r"(?:Fatal error|Parse error|Uncaught \w+|syntax error)[^\n]* in (/var/www/html/\S+\.php) on line (\d+)",
+    re.IGNORECASE,
+)
+MAGENTO_FILE_ERROR_RE = re.compile(
+    r"There is an error in\s+(/var/www/html/\S+\.php)",
+    re.IGNORECASE,
+)
+MAGENTO_PHP_LINE_RE = re.compile(
+    r"(?:in |on )line\s+(\d+)",
     re.IGNORECASE,
 )
 WEBAPI_CONFIG_ROOT_ERROR_RE = re.compile(
@@ -396,6 +405,43 @@ def _is_webapi_route_resources_error(element: str, detail: str) -> bool:
     )
 
 
+def _xml_parse_error(content: str) -> str | None:
+    try:
+        ET.fromstring(content)
+    except ET.ParseError as exc:
+        return str(exc)
+    return None
+
+
+def _collect_db_schema_wellformedness(
+    cwd: str,
+    rel: str | None,
+    issues: list[dict[str, Any]],
+    summary_parts: list[str],
+) -> bool:
+    """Return True when a well-formedness issue was recorded."""
+    if not rel or not rel.endswith("db_schema.xml"):
+        return False
+    content = _read_file(cwd, rel)
+    if content is None:
+        return False
+    parse_error = _xml_parse_error(content)
+    if not parse_error:
+        return False
+    message = (
+        f"db_schema.xml ({rel}) is not well-formed XML: {parse_error}. "
+        "Repair duplicate/broken tags and ensure every <table> is closed."
+    )
+    issues.append({
+        "kind": "db_schema_malformed",
+        "file": rel,
+        "message": message,
+        "autoFixable": False,
+    })
+    summary_parts.append(f"Malformed db_schema.xml ({rel})")
+    return True
+
+
 def _collect_standalone_xml_errors(
     output: str,
     cwd: str,
@@ -517,6 +563,8 @@ def _collect_xml_issues(
                 })
             summary_parts.append(f"Invalid {label}: {rel or reported}")
         else:
+            if is_db_schema and rel and _collect_db_schema_wellformedness(cwd, rel, issues, summary_parts):
+                continue
             issues.append({
                 "kind": "xml_validation",
                 "file": rel,
@@ -542,6 +590,48 @@ def _error_files_from_analysis(output: str, cwd: str, issues: list[dict[str, Any
     return files
 
 
+def _collect_magento_php_compile_errors(
+    output: str,
+    cwd: str,
+    issues: list[dict[str, Any]],
+    summary_parts: list[str],
+) -> None:
+    seen: set[str] = set()
+    for match in MAGENTO_FILE_ERROR_RE.finditer(output):
+        reported = match.group(1)
+        rel = _rel_path(cwd, reported)
+        key = rel or reported
+        if key in seen:
+            continue
+        seen.add(key)
+
+        after = output[match.end() : match.end() + 400]
+        line_match = MAGENTO_PHP_LINE_RE.search(after)
+        line_num = int(line_match.group(1)) if line_match else None
+        if line_num is None:
+            line_num = _php_error_line_from_output(output, reported, rel)
+
+        detail_parts: list[str] = []
+        for raw_line in after.splitlines()[:5]:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            detail_parts.append(line)
+            if line_match and line_match.group(0) in line:
+                break
+        detail_msg = " ".join(detail_parts)[:240] if detail_parts else "syntax error during DI compile"
+
+        issues.append({
+            "kind": "php_syntax",
+            "file": rel,
+            "reportedPath": reported,
+            "lines": [line_num] if line_num else [],
+            "message": f"PHP syntax error in {rel or reported}: {detail_msg}",
+            "autoFixable": False,
+        })
+        summary_parts.append(f"PHP syntax error: {rel or os.path.basename(reported)}")
+
+
 def analyze_deploy_failure(deploy: dict | None, cwd: str) -> dict[str, Any]:
     output, failed_step = _failed_step_output(deploy)
     issues: list[dict[str, Any]] = []
@@ -551,6 +641,8 @@ def analyze_deploy_failure(deploy: dict | None, cwd: str) -> dict[str, Any]:
         _collect_xml_issues(output, cwd, issues, summary_parts)
 
     _collect_standalone_xml_errors(output, cwd, issues, summary_parts)
+
+    _collect_magento_php_compile_errors(output, cwd, issues, summary_parts)
 
     php_errors = list(PHP_ERROR_IN_RE.finditer(output))
     if php_errors:
@@ -672,6 +764,140 @@ def _auto_fix_targets(cwd: str, analysis: dict[str, Any]) -> dict[str, list[str]
     return targets
 
 
+def _php_error_line_from_output(output: str, reported: str, rel: str | None) -> int | None:
+    names = {n for n in (os.path.basename(reported), os.path.basename(rel or ""), rel or "") if n}
+    for name in names:
+        for pattern in (
+            rf"{re.escape(name)}[^\n]{{0,160}}on line (\d+)",
+            rf"{re.escape(name)}[^\n]{{0,160}}in line (\d+)",
+        ):
+            match = re.search(pattern, output, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    for pattern in (r"on line (\d+)", r"in line (\d+)"):
+        match = re.search(pattern, output, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _make_php_linter(
+    cwd: str,
+    php_bin: str | None,
+    docker_compose_path: str | None,
+):
+    from services.php_lint import lint_php_content_for_project
+
+    def lint(content: str) -> str | None:
+        return lint_php_content_for_project(
+            cwd,
+            content,
+            php_bin=php_bin,
+            docker_compose_path=docker_compose_path,
+        )
+
+    return lint
+
+
+def _fix_unmatched_brace(content: str, lint_fn, error_line: int | None) -> str | None:
+    """Try minimal brace edits until php -l passes."""
+    if lint_fn(content) is None:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    if lines:
+        candidates: list[int] = []
+        if error_line and 1 <= error_line <= len(lines):
+            candidates.extend(range(error_line - 1, max(-1, error_line - 12), -1))
+        candidates.extend(range(len(lines) - 1, -1, -1))
+        seen_idx: set[int] = set()
+        for idx in candidates:
+            if idx in seen_idx or idx < 0 or idx >= len(lines):
+                continue
+            seen_idx.add(idx)
+            line = lines[idx]
+            for pos in reversed([i for i, ch in enumerate(line) if ch == "}"]):
+                new_line = line[:pos] + line[pos + 1 :]
+                candidate = "".join(lines[:idx] + [new_line] + lines[idx + 1 :])
+                if lint_fn(candidate) is None:
+                    return candidate
+
+        trimmed = content.rstrip()
+        for _ in range(8):
+            if not trimmed.endswith("}"):
+                break
+            trimmed = trimmed[:-1].rstrip()
+            candidate = trimmed + "\n"
+            if lint_fn(candidate) is None:
+                return candidate
+
+    for pos in reversed([i for i, ch in enumerate(content) if ch == "}"]):
+        candidate = content[:pos] + content[pos + 1 :]
+        if lint_fn(candidate) is None:
+            return candidate
+
+    stripped = content.rstrip()
+    for suffix in ("}\n", "\n}\n", "\n    }\n}\n"):
+        candidate = stripped + suffix
+        if lint_fn(candidate) is None:
+            return candidate
+
+    return None
+
+
+def build_php_syntax_auto_fix(
+    cwd: str,
+    analysis: dict[str, Any],
+    php_bin: str = "php",
+    docker_compose_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Deterministic fix for PHP parse/syntax errors (e.g. unmatched braces) before calling AI."""
+    lint_fn = _make_php_linter(cwd, php_bin, docker_compose_path)
+
+    php_issues = [
+        issue
+        for issue in (analysis.get("issues") or [])
+        if issue.get("kind") in ("php_syntax", "php_runtime") and issue.get("file")
+    ]
+    if not php_issues:
+        return None
+
+    files: list[dict[str, Any]] = []
+    summaries: list[str] = []
+    for issue in php_issues[:3]:
+        rel = issue["file"]
+        content = _read_file(cwd, rel)
+        if content is None:
+            continue
+        if lint_fn(content) is None:
+            continue
+
+        line_nums = issue.get("lines") or []
+        error_line = line_nums[0] if line_nums else None
+        fixed = _fix_unmatched_brace(content, lint_fn, error_line)
+        if not fixed or fixed == content:
+            continue
+        if lint_fn(fixed) is not None:
+            continue
+
+        files.append({
+            "path": rel,
+            "action": "modify",
+            "reason": f"Auto-fix PHP syntax: {issue.get('message', 'syntax error')}",
+            "content": fixed,
+        })
+        summaries.append(f"Auto-fixed PHP syntax in {rel}")
+
+    if not files:
+        return None
+    return {
+        "summary": "; ".join(summaries),
+        "files": files,
+        "manualTestChecklist": ["Re-run local deploy"],
+        "risks": [],
+    }
+
+
 def build_auto_fix_proposals(cwd: str, analysis: dict[str, Any]) -> dict[str, Any] | None:
     """Build an agent-style fix proposal for known deploy errors (no disk write)."""
     targets = _auto_fix_targets(cwd, analysis)
@@ -734,8 +960,18 @@ def gather_deploy_fix_excerpts(
     """Focused file excerpts for deploy-fix — only files tied to the deploy error."""
     output, _failed_step = _failed_step_output(deploy)
     error_files = analysis.get("errorFiles") or _paths_from_deploy_output(output, cwd)
+    syntax_files = {
+        issue.get("file")
+        for issue in (analysis.get("issues") or [])
+        if issue.get("kind") in ("php_syntax", "php_runtime") and issue.get("file")
+    }
     path_excerpts = []
     for rel in error_files[:6]:
+        if rel in syntax_files:
+            content = _read_file(cwd, rel)
+            if content:
+                path_excerpts.append({"path": rel, "content": content[:12_000]})
+                continue
         item = _read_excerpt(cwd, rel, 2500)
         if item:
             path_excerpts.append(item)

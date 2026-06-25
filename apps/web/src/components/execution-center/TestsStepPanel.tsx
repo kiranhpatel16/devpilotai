@@ -58,12 +58,17 @@ export function TestsStepPanel({
 
   const {
     runDeployPipeline,
+    runDeployFix,
+    applyDeployFix,
+    redeployAfterFix,
     pipelineRunning,
     deployModalOpen,
-    setDeployModalOpen,
+    openDeployModal,
     deployPhase,
     deployModalError,
     closeDeployModal,
+    deployFixing,
+    deployApplying,
     deployPending,
   } = useDeployPipeline(detail, onChange);
 
@@ -211,7 +216,7 @@ export function TestsStepPanel({
               <button
                 type="button"
                 className={taskBtnGhost}
-                onClick={() => setDeployModalOpen(true)}
+                onClick={openDeployModal}
               >
                 View progress
               </button>
@@ -262,7 +267,13 @@ export function TestsStepPanel({
         detail={detail}
         phase={deployPhase}
         error={deployModalError}
+        fixing={deployFixing}
+        applying={deployApplying}
         onClose={closeDeployModal}
+        onRetry={() => void runDeployPipeline()}
+        onProposeFix={() => void runDeployFix()}
+        onApplyFix={(paths) => void applyDeployFix(paths)}
+        onRedeploy={() => void redeployAfterFix()}
       />
 
       <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/60 bg-[#12121f]/95 px-1 py-3 backdrop-blur-sm">

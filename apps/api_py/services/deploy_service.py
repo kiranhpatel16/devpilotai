@@ -4,6 +4,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from typing import Any
 from database import now_iso
+from services.command_output import summarize_command_output
 from services.deploy_profile import (
     DeployProfile,
     deploy_profile_reason,
@@ -68,7 +69,9 @@ async def _run_shell(cmd: str, cwd: str, timeout: int = STEP_TIMEOUT_DEFAULT) ->
             text=True,
             timeout=timeout,
         )
-        output = (result.stdout + result.stderr)[-8000:]
+        output = summarize_command_output(
+            result.stdout, result.stderr, ok=result.returncode == 0,
+        )
         return {"ok": result.returncode == 0, "output": output}
     except subprocess.TimeoutExpired:
         return {"ok": False, "output": f"Command timed out after {timeout}s"}
@@ -81,7 +84,9 @@ async def _run(cmd: list[str], cwd: str, timeout: int = STEP_TIMEOUT_DEFAULT) ->
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
         )
-        output = (result.stdout + result.stderr)[-8000:]
+        output = summarize_command_output(
+            result.stdout, result.stderr, ok=result.returncode == 0,
+        )
         return {"ok": result.returncode == 0, "output": output}
     except subprocess.TimeoutExpired:
         return {"ok": False, "output": f"Command timed out after {timeout}s"}

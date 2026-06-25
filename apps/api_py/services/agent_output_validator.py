@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -192,6 +193,9 @@ def validate_deploy_fix_output(
     cwd: str,
     output: dict[str, Any],
     analysis: dict[str, Any],
+    *,
+    php_bin: str | None = None,
+    docker_compose_path: str | None = None,
 ) -> dict[str, list[str]]:
     """Validate deploy-fix proposals — must target error files and apply cleanly."""
     blocking: list[str] = []
@@ -226,10 +230,23 @@ def validate_deploy_fix_output(
                     f"{path}: proposed fix leaves the file unchanged — deploy would fail again."
                 )
 
-        if PHP_CODE_FILE_RE.search(path) and proposed_content and _has_stub_content(proposed_content):
-            blocking.append(
-                f"{path}: contains stub/placeholder PHP — write a real fix for the deploy error."
+        if PHP_CODE_FILE_RE.search(path) and proposed_content:
+            from services.php_lint import lint_php_content_for_project
+
+            lint_error = lint_php_content_for_project(
+                cwd,
+                proposed_content,
+                php_bin=php_bin,
+                docker_compose_path=docker_compose_path,
             )
+            if lint_error:
+                blocking.append(
+                    f"{path}: {lint_error} — use action=modify with FULL corrected file content (not edits)."
+                )
+            elif _has_stub_content(proposed_content):
+                blocking.append(
+                    f"{path}: contains stub/placeholder PHP — write a real fix for the deploy error."
+                )
 
     if error_files and not (proposed_paths & error_files):
         blocking.append(
@@ -238,3 +255,41 @@ def validate_deploy_fix_output(
         )
 
     return {"blocking": blocking, "warnings": warnings}
+
+
+def _lint_php_content(php_bin: str, content: str) -> str | None:
+    from services.php_lint import lint_php_content, resolve_php_lint_bin
+
+    return lint_php_content(resolve_php_lint_bin(php_bin), content)
+
+
+def lint_deploy_fix_php_syntax(
+    cwd: str,
+    php_bin: str,
+    files: list[dict],
+    selected_paths: list[str] | None,
+    docker_compose_path: str | None = None,
+) -> list[str]:
+    """Return blocking messages when proposed deploy-fix PHP still fails php -l."""
+    from services.php_lint import lint_php_content_for_project
+
+    selected = {
+        p for p in (selected_paths or [f.get("path") for f in files if f.get("path")]) if p
+    }
+    errors: list[str] = []
+    for change in files:
+        path = (change.get("path") or "").replace("\\", "/")
+        if not path or path not in selected or not PHP_CODE_FILE_RE.search(path):
+            continue
+        resolved = resolve_new_content(cwd, change)
+        if resolved.get("error"):
+            continue
+        lint_error = lint_php_content_for_project(
+            cwd,
+            resolved.get("content") or "",
+            php_bin=php_bin,
+            docker_compose_path=docker_compose_path,
+        )
+        if lint_error:
+            errors.append(f"{path}: {lint_error}")
+    return errors

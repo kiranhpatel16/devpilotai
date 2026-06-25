@@ -282,6 +282,12 @@ export function WorkflowStepContent({
       setDeployPhase('review');
     } catch (err) {
       setDeployModalError(getApiErrorMessage(err));
+      try {
+        const latest = (await api.get<{ detail: RunDetail }>(`/workflow/runs/${run.id}`)).data.detail;
+        onChange(latest);
+      } catch {
+        // keep existing detail if refetch fails
+      }
     } finally {
       pipelineRunningRef.current = false;
       setDeployApplying(false);

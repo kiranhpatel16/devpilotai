@@ -33,10 +33,12 @@ from services.workflow import (
     mark_completed,
     step_index,
 )
+from services.deploy_profile import deploy_profile_reason, resolve_deploy_profile
 from services.deploy_service import run_local_deploy
 from services.deploy_error_service import (
     analyze_deploy_failure,
     build_auto_fix_proposals,
+    build_php_syntax_auto_fix,
     enrich_deploy_report,
     gather_deploy_fix_excerpts,
 )
@@ -174,6 +176,7 @@ async def _build_deploy_fix_context(
     ]))
     repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
     last_fix = (deploy or {}).get("lastFix")
+    last_failed_fix = last_fix if last_fix and last_fix.get("status") == "failed" else None
     return {
         "project": resolved["project"],
         "cwd": resolved["cwd"],
@@ -189,10 +192,13 @@ async def _build_deploy_fix_context(
         "deployAnalysis": analysis,
         "deployOutput": analysis.get("rawOutput") or "",
         "approvedPlanMarkdown": detail.get("planMarkdown"),
-        "lastFailedFix": last_fix,
+        "lastFailedFix": last_failed_fix,
         "deployFileExcerpts": gather_deploy_fix_excerpts(
             resolved["cwd"], deploy, analysis,
         ),
+        "phpBin": resolved["env"].get("phpBin") or "php",
+        "dockerComposePath": resolved["env"].get("dockerComposePath"),
+        "deployLastFix": (deploy or {}).get("lastFix"),
     }
 
 
@@ -517,6 +523,10 @@ def _schedule_deploy_job(
     cwd: str,
     php_bin: str,
     docker_compose_path: str | None,
+    *,
+    changed_paths: list[str] | None = None,
+    project_deploy_mode: str = "auto",
+    skip_composer_project: bool = False,
 ) -> None:
     if run_id in _deploy_tasks and not _deploy_tasks[run_id].done():
         return
@@ -546,6 +556,9 @@ def _schedule_deploy_job(
                 php_bin,
                 docker_compose_path,
                 on_progress=on_progress,
+                changed_paths=changed_paths,
+                project_deploy_mode=project_deploy_mode,
+                skip_composer_project=skip_composer_project,
             )
             if not report.get("ok"):
                 report = enrich_deploy_report(report, cwd)
@@ -603,9 +616,19 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     )
     profile_reason = deploy_profile_reason(profile, changed_paths)
 
-    _schedule_deploy_job(run_id, cwd, php_bin, docker_compose_path)
+    _schedule_deploy_job(
+        run_id,
+        cwd,
+        php_bin,
+        docker_compose_path,
+        changed_paths=changed_paths,
+        project_deploy_mode=defaults.get("deployProfile") or "auto",
+        skip_composer_project=bool(defaults.get("deploySkipComposer")),
+    )
+    existing_deploy = detail.get("deploy") or {}
     patch_detail(run_id, {
         "deploy": {
+            **existing_deploy,
             "ranAt": now_iso(),
             "ok": False,
             "running": True,
@@ -613,42 +636,11 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
             "runningStep": "docker_target",
             "profile": profile,
             "profileReason": profile_reason,
+            "analysis": None,
+            "error": None,
         },
     })
     runs_repo.update_fields(run_id, {"status": "deploying"})
-
-    async def on_progress(report: dict) -> None:
-        patch_detail(run_id, {"deploy": report})
-
-    async def job() -> None:
-        try:
-            report = await run_local_deploy(
-                cwd,
-                php_bin,
-                docker_compose_path,
-                on_progress=on_progress,
-                changed_paths=changed_paths,
-                project_deploy_mode=defaults.get("deployProfile") or "auto",
-                skip_composer_project=bool(defaults.get("deploySkipComposer")),
-            )
-            patch_detail(run_id, {"deploy": report})
-            runs_repo.update_fields(run_id, {
-                "status": "deploy_ready" if report["ok"] else "deploy_failed",
-            })
-        except Exception as exc:
-            failed = {
-                "ranAt": now_iso(),
-                "ok": False,
-                "running": False,
-                "steps": load_detail(run_id).get("deploy", {}).get("steps", []),
-                "error": str(exc),
-            }
-            patch_detail(run_id, {"deploy": failed})
-            runs_repo.update_fields(run_id, {"status": "deploy_failed"})
-        finally:
-            _deploy_tasks.pop(run_id, None)
-
-    _deploy_tasks[run_id] = asyncio.create_task(job())
     return {"detail": _assemble_detail(run_id)}
 
 
@@ -669,12 +661,16 @@ async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
 
     resolved = resolve_environment(run["userId"], run["projectId"])
     cwd = resolved["cwd"]
+    php_bin = resolved["env"].get("phpBin") or "php"
+    docker_compose_path = resolved["env"].get("dockerComposePath")
     analysis = analyze_deploy_failure(deploy, cwd)
     if not analysis.get("rawOutput"):
         raise HttpError.bad_request("No deploy error output available to fix.")
 
     last_fix = (deploy or {}).get("lastFix")
     auto_output = build_auto_fix_proposals(cwd, analysis)
+    if not auto_output:
+        auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
     fix_mode = "auto"
     ai_result = None
 
@@ -690,19 +686,49 @@ async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
 
     files = output.get("files") or []
     if not files:
-        raise HttpError.bad_request("No file changes were proposed for the deploy error.")
+        auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
+        if auto_output:
+            output = auto_output
+            fix_mode = "auto"
+            files = output.get("files") or []
+
+    if not files:
+        ai_errors = (ai_result or {}).get("validation", {}).get("blocking") or []
+        hint = f" {'; '.join(ai_errors[:2])}" if ai_errors else ""
+        raise HttpError(
+            422,
+            f"No valid fix could be generated for this deploy error.{hint}",
+            "deploy_fix_empty",
+        )
 
     from services.agent_output_validator import validate_deploy_fix_output
-    validation = validate_deploy_fix_output(cwd, output, analysis)
+    validation = validate_deploy_fix_output(
+        cwd, output, analysis, php_bin=php_bin, docker_compose_path=docker_compose_path,
+    )
+    if validation["blocking"] and fix_mode == "ai":
+        auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
+        if auto_output:
+            output = auto_output
+            fix_mode = "auto"
+            files = output.get("files") or []
+            validation = validate_deploy_fix_output(
+                cwd, output, analysis, php_bin=php_bin, docker_compose_path=docker_compose_path,
+            )
     if validation["blocking"]:
         if fix_mode == "auto":
-            raise HttpError.bad_request(
+            raise HttpError(
+                422,
                 "Auto-fix could not resolve the deploy error: "
                 + "; ".join(validation["blocking"][:3]),
+                "deploy_fix_failed",
+                {"errors": validation["blocking"]},
             )
-        raise HttpError.bad_request(
-            "AI fix did not target the deploy error correctly. Try Regenerate fix. "
+        raise HttpError(
+            422,
+            "Could not generate a valid fix. "
             + "; ".join(validation["blocking"][:3]),
+            "deploy_fix_failed",
+            {"errors": validation["blocking"]},
         )
 
     diffs = compute_diffs(cwd, files)
