@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { JiraBoard, JiraStatusGroup, JiraTask } from '@cpwork/shared';
+import { CreateCustomTaskModal } from './CreateCustomTaskModal';
 
 function mergeStatusGroups(groups: JiraStatusGroup[]): JiraStatusGroup[] {
   const merged = new Map<string, JiraStatusGroup>();
@@ -22,7 +24,7 @@ function statusColor(category: string): string {
     case 'In Progress':
       return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
     default:
-      return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+      return 'bg-slate-100 text-slate-600 dark:bg-neutral-800 dark:text-slate-300';
   }
 }
 
@@ -50,17 +52,26 @@ export function TaskBoardPanel({
   jiraMessage,
 }: TaskBoardPanelProps) {
   const navigate = useNavigate();
+  const [createOpen, setCreateOpen] = useState(false);
 
   function openTask(task: JiraTask) {
     navigate(`/workspaces/${projectId}/tasks/${encodeURIComponent(task.key)}`);
   }
 
   function startCustomTask() {
-    navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`);
+    setCreateOpen(true);
   }
 
   return (
     <div className="space-y-4">
+      <CreateCustomTaskModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        projectId={projectId}
+        onCreated={() => {
+          navigate(`/workspaces/${projectId}?tab=custom`);
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Jira tasks</h2>
@@ -69,7 +80,7 @@ export function TaskBoardPanel({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-md border border-slate-200 p-0.5 text-xs dark:border-slate-700">
+          <div className="flex rounded-md border border-slate-200 p-0.5 text-xs dark:border-neutral-800">
             <button
               type="button"
               className={[
@@ -133,7 +144,7 @@ export function TaskBoardPanel({
                     key={task.key}
                     type="button"
                     onClick={() => openTask(task)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-3 text-left transition-colors hover:border-brand-400 hover:bg-brand-50/50 dark:border-slate-700 dark:bg-slate-800/80 dark:hover:border-brand-500/50"
+                    className="w-full rounded-lg border border-slate-200 bg-white p-3 text-left transition-colors hover:border-brand-400 hover:bg-brand-50/50 dark:border-neutral-800 dark:bg-neutral-900/80 dark:hover:border-brand-500/50"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-sm font-medium text-brand-600 dark:text-brand-400">

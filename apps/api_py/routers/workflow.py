@@ -9,6 +9,8 @@ from db.runs import runs_repo
 from db.project_roles import project_roles_repo
 from db.activities import activities_repo
 from db.ai_settings import run_usage_repo
+from db.projects import projects_repo
+from db.users import users_repo
 from services.environment import resolve_environment
 from services.jira_service import get_issue_detail, post_issue_comment
 from services.ai_service import run_ai
@@ -42,6 +44,11 @@ from services.deploy_error_service import (
     enrich_deploy_report,
     gather_deploy_fix_excerpts,
 )
+from services.test_error_service import (
+    analyze_test_failure,
+    build_phpunit_auto_fix,
+    gather_test_fix_excerpts,
+)
 from database import now_iso
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
@@ -53,6 +60,8 @@ class StartWorkflowBody(BaseModel):
     projectId: str
     jiraKey: Optional[str] = None
     customTitle: Optional[str] = None
+    customTaskKey: Optional[str] = None
+    customRequirements: Optional[str] = None
 
 
 class UpdateStepBody(BaseModel):
@@ -74,6 +83,10 @@ class PostJiraCommentBody(BaseModel):
 
 class CommitBody(BaseModel):
     message: str
+
+
+class BulkDeleteBody(BaseModel):
+    runIds: list[str]
 
 
 def _sanitize_branch(name: str) -> str:
@@ -134,7 +147,7 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict):
     jira = _jira_for_run(run, detail)
     task_text = " ".join(filter(None, [
         jira["summary"] if jira else detail.get("customTitle"),
-        jira.get("description") if jira else None,
+        jira.get("description") if jira else detail.get("customRequirements"),
         run.get("userInstructions"),
         run.get("branchName"),
     ]))
@@ -202,28 +215,177 @@ async def _build_deploy_fix_context(
     }
 
 
+async def _build_test_fix_context(
+    run: dict,
+    detail: dict,
+    resolved: dict,
+    test_report: dict | None,
+    analysis: dict,
+) -> dict:
+    """Slim AI context for test-fix."""
+    jira = _jira_for_run(run, detail)
+    task_text = " ".join(filter(None, [
+        jira["summary"] if jira else detail.get("customTitle"),
+        analysis.get("summary"),
+        " ".join(analysis.get("errorFiles") or []),
+        run.get("branchName"),
+    ]))
+    repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
+    changed_paths = [f["path"] for f in (detail.get("output") or {}).get("files") or []]
+    last_fix = (test_report or {}).get("lastFix")
+    last_failed_fix = last_fix if last_fix and last_fix.get("status") == "failed" else None
+    return {
+        "project": resolved["project"],
+        "cwd": resolved["cwd"],
+        "frontendUrl": resolved["frontendUrl"],
+        "backendUrl": resolved["backendUrl"],
+        "jira": jira,
+        "jiraKey": run.get("jiraKey"),
+        "userInstructions": run.get("userInstructions"),
+        "activeTheme": resolved["project"].get("frontendTheme"),
+        "repoOverview": repo["overview"],
+        "fileExcerpts": [],
+        "mode": "test_fix",
+        "testAnalysis": analysis,
+        "testOutput": analysis.get("rawOutput") or "",
+        "approvedPlanMarkdown": detail.get("planMarkdown"),
+        "lastFailedFix": last_failed_fix,
+        "testFileExcerpts": gather_test_fix_excerpts(
+            resolved["cwd"], analysis, changed_paths,
+        ),
+        "phpBin": resolved["env"].get("phpBin") or "php",
+        "dockerComposePath": resolved["env"].get("dockerComposePath"),
+        "testLastFix": (test_report or {}).get("lastFix"),
+    }
+
+
+def _accessible_project_ids(auth: dict) -> list[str]:
+    if is_admin_role(auth["role"]):
+        return [p["id"] for p in projects_repo.list_all()]
+    return [a["projectId"] for a in project_roles_repo.list_for_user(auth["sub"])]
+
+
+def _can_delete_run(auth: dict, run: dict) -> bool:
+    if run["userId"] == auth["sub"]:
+        return True
+    return is_admin_role(auth["role"])
+
+
+def _history_row(run: dict, *, username: str | None = None, display_name: str | None = None, project_name: str | None = None) -> dict:
+    detail = load_detail(run["id"])
+    wf = extract_workflow(detail)
+    user = users_repo.find_by_id(run["userId"]) if not username else None
+    return {
+        "runId": run["id"],
+        "projectId": run["projectId"],
+        "projectName": project_name,
+        "userId": run["userId"],
+        "username": username or (user["username"] if user else None),
+        "displayName": display_name or (user["displayName"] if user else None),
+        "jiraKey": run.get("jiraKey"),
+        "customTitle": wf.get("customTitle"),
+        "customTaskKey": wf.get("customTaskKey"),
+        "customRequirements": wf.get("customRequirements"),
+        "branchName": run.get("branchName"),
+        "provider": run.get("provider"),
+        "model": run.get("model"),
+        "approvalStatus": run.get("approvalStatus") or wf["approvalStatus"],
+        "testPassRate": wf.get("testPassRate"),
+        "currentStep": run.get("currentStep") or wf["currentStep"],
+        "summary": run.get("summary"),
+        "createdAt": run["createdAt"],
+        "updatedAt": run["updatedAt"],
+    }
+
+
+def _cancel_deploy_task(run_id: str) -> None:
+    deploy_task = _deploy_tasks.pop(run_id, None)
+    if deploy_task and not deploy_task.done():
+        deploy_task.cancel()
+
+
 @router.get("/history")
-async def workflow_history(projectId: str, auth: dict = Depends(get_auth)):
+async def workflow_history(
+    projectId: str,
+    auth: dict = Depends(get_auth),
+    userId: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+    page: int = 1,
+    pageSize: int = 20,
+):
     _assert_project_access(auth, projectId)
-    runs = runs_repo.list_workflow_for_project(projectId)
-    rows = []
-    for run in runs:
-        detail = load_detail(run["id"])
-        wf = extract_workflow(detail)
-        rows.append({
-            "runId": run["id"],
-            "jiraKey": run.get("jiraKey"),
-            "branchName": run.get("branchName"),
-            "provider": run.get("provider"),
-            "model": run.get("model"),
-            "approvalStatus": wf["approvalStatus"],
-            "testPassRate": wf.get("testPassRate"),
-            "currentStep": wf["currentStep"],
-            "summary": run.get("summary"),
-            "createdAt": run["createdAt"],
-            "updatedAt": run["updatedAt"],
-        })
-    return {"rows": rows}
+    page = max(page, 1)
+    page_size = min(max(pageSize, 1), 100)
+
+    runs, total = runs_repo.list_workflow_history(
+        [projectId],
+        project_id=projectId,
+        user_id=userId,
+        approval_status=status,
+        search=q,
+        page=page,
+        page_size=page_size,
+    )
+    rows = [
+        _history_row(
+            run,
+            username=run.get("username"),
+            display_name=run.get("displayName"),
+            project_name=run.get("projectName"),
+        )
+        for run in runs
+    ]
+    users = runs_repo.list_distinct_history_users([projectId])
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "filterUsers": users,
+    }
+
+
+@router.get("/history/global")
+async def workflow_history_global(
+    auth: dict = Depends(get_auth),
+    projectId: str | None = None,
+    userId: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+    page: int = 1,
+    pageSize: int = 20,
+):
+    project_ids = _accessible_project_ids(auth)
+    page = max(page, 1)
+    page_size = min(max(pageSize, 1), 100)
+
+    runs, total = runs_repo.list_workflow_history(
+        project_ids,
+        project_id=projectId,
+        user_id=userId,
+        approval_status=status,
+        search=q,
+        page=page,
+        page_size=page_size,
+    )
+    rows = [
+        _history_row(
+            run,
+            username=run.get("username"),
+            display_name=run.get("displayName"),
+            project_name=run.get("projectName"),
+        )
+        for run in runs
+    ]
+    users = runs_repo.list_distinct_history_users(project_ids)
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "filterUsers": users,
+    }
 
 
 @router.post("/runs", status_code=201)
@@ -261,10 +423,27 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
 
     detail = _init_detail()
     detail["jiraSnapshot"] = jira_snapshot
-    detail["customTitle"] = (body.customTitle or "").strip() or None
-    detail["currentStep"] = "branch"
-    detail["completedSteps"] = mark_completed([], "select")
+    custom_title = (body.customTitle or "").strip() or None
+    detail["customTitle"] = custom_title
+    detail["customTaskKey"] = (body.customTaskKey or "").strip() or None
+    detail["customRequirements"] = (body.customRequirements or "").strip() or None
+
+    if jira_key:
+        detail["currentStep"] = "branch"
+        detail["completedSteps"] = mark_completed([], "select")
+        initial_step = "branch"
+    else:
+        detail["currentStep"] = "describe"
+        detail["completedSteps"] = mark_completed(mark_completed([], "select"), "branch")
+        initial_step = "describe"
+
     save_detail(run["id"], detail)
+
+    runs_repo.update_fields(run["id"], {
+        "currentStep": initial_step,
+        "approvalStatus": "draft",
+        "summary": custom_title,
+    })
 
     activities_repo.create({
         "userId": auth["sub"], "username": auth["username"],
@@ -272,7 +451,11 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
         "resourceId": run["id"], "projectId": body.projectId,
         "projectName": resolved["project"]["name"],
         "jiraKey": jira_key,
-        "summary": f"{auth['username']} started workflow{f' for {jira_key}' if jira_key else ''}",
+        "summary": (
+            f"{auth['username']} created custom task {custom_title}"
+            if not jira_key
+            else f"{auth['username']} started workflow for {jira_key}"
+        ),
     })
 
     return {"detail": _assemble_detail(run["id"])}
@@ -768,6 +951,137 @@ async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
     }
 
 
+@router.post("/runs/{run_id}/test-fix")
+async def test_fix(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    _assert_project_access(auth, run["projectId"], write=True)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] not in ("deploy", "commit"):
+        raise HttpError.bad_request("Test fix is only available after code is approved")
+
+    test_report = detail.get("test")
+    if not test_report or test_report.get("ok"):
+        raise HttpError.bad_request("No failing test report to fix")
+    if test_report.get("running"):
+        raise HttpError.bad_request("Tests are still running")
+
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    cwd = resolved["cwd"]
+    analysis = analyze_test_failure(test_report)
+    if not analysis.get("aiFixable"):
+        raise HttpError.bad_request("No test failure output available to fix.")
+
+    last_fix = (test_report or {}).get("lastFix")
+    fix_mode = "auto"
+    ai_result = None
+    auto_output = build_phpunit_auto_fix(cwd, analysis)
+    if auto_output:
+        output = auto_output
+    else:
+        fix_mode = "ai"
+        provider = _pick_provider(run.get("provider"))
+        ctx = await _build_test_fix_context(run, detail, resolved, test_report, analysis)
+        ai_result = await run_ai(provider, run.get("model"), ctx)
+        run_usage_repo.record(run_id, ai_result["usage"])
+        output = ai_result["output"]
+
+    files = output.get("files") or []
+    if not files and fix_mode == "ai":
+        auto_output = build_phpunit_auto_fix(cwd, analysis)
+        if auto_output:
+            output = auto_output
+            fix_mode = "auto"
+            files = output.get("files") or []
+
+    if not files:
+        ai_errors = (ai_result or {}).get("validation", {}).get("blocking") or []
+        hint = f" {'; '.join(ai_errors[:2])}" if ai_errors else ""
+        raise HttpError(
+            422,
+            f"No valid fix could be generated for this test failure.{hint}",
+            "test_fix_empty",
+        )
+
+    from services.agent_output_validator import validate_test_fix_output
+    validation = validate_test_fix_output(
+        cwd,
+        output,
+        analysis,
+        php_bin=resolved["env"].get("phpBin") or "php",
+        docker_compose_path=resolved["env"].get("dockerComposePath"),
+    )
+    if validation["blocking"] and fix_mode == "ai":
+        auto_output = build_phpunit_auto_fix(cwd, analysis)
+        if auto_output:
+            output = auto_output
+            fix_mode = "auto"
+            files = output.get("files") or []
+            validation = validate_test_fix_output(
+                cwd,
+                output,
+                analysis,
+                php_bin=resolved["env"].get("phpBin") or "php",
+                docker_compose_path=resolved["env"].get("dockerComposePath"),
+            )
+    if validation["blocking"]:
+        if fix_mode == "auto":
+            raise HttpError(
+                422,
+                "Auto-fix could not resolve the test failure: "
+                + "; ".join(validation["blocking"][:3]),
+                "test_fix_failed",
+                {"errors": validation["blocking"]},
+            )
+        raise HttpError(
+            422,
+            "Could not generate a valid fix. "
+            + "; ".join(validation["blocking"][:3]),
+            "test_fix_failed",
+            {"errors": validation["blocking"]},
+        )
+
+    diffs = compute_diffs(cwd, files)
+    diff_errors = [d for d in diffs if d.get("error")]
+    if diff_errors:
+        raise HttpError.bad_request(
+            "Proposed fix could not be applied: "
+            + "; ".join(f"{d['path']}: {d['error']}" for d in diff_errors[:3]),
+        )
+
+    git = await get_status(cwd, resolved["project"]["git"]["productionBranch"])
+    git["branch"] = run.get("branchName")
+    fix_summary = output.get("summary") or (
+        "Auto-fixed PHPUnit test mock" if fix_mode == "auto" else "AI agent proposed fixes for the test failure"
+    )
+
+    patch_detail(run_id, {
+        "output": output,
+        "diffs": diffs,
+        "applied": False,
+        "backups": [],
+        "git": git,
+        "usage": ai_result["usage"] if ai_result else None,
+        "test": {
+            **test_report,
+            "analysis": analysis,
+            "lastFix": {
+                "mode": fix_mode,
+                "summary": fix_summary,
+                "paths": [f["path"] for f in files],
+                "previousPaths": (last_fix or {}).get("paths"),
+                "at": now_iso(),
+                "status": "proposed",
+            },
+        },
+    })
+
+    return {
+        "detail": _assemble_detail(run_id),
+        "fix": {"mode": fix_mode, "summary": fix_summary, "proposed": True},
+    }
+
+
 @router.post("/runs/{run_id}/complete-deploy")
 async def complete_deploy(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
@@ -833,6 +1147,66 @@ async def post_jira(run_id: str, body: PostJiraCommentBody, auth: dict = Depends
 async def restore_run(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     return {"detail": _assemble_detail(run_id)}
+
+
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str, auth: dict = Depends(get_auth)):
+    run = runs_repo.find_by_id(run_id)
+    if not run:
+        raise HttpError.not_found("Run not found")
+    if run["mode"] != "workflow":
+        raise HttpError.bad_request("Not a workflow run")
+    _assert_project_access(auth, run["projectId"])
+    if not _can_delete_run(auth, run):
+        raise HttpError.forbidden("You cannot delete this workflow run")
+    _cancel_deploy_task(run_id)
+    runs_repo.delete_by_id(run_id)
+    activities_repo.create({
+        "userId": auth["sub"],
+        "username": auth["username"],
+        "action": "workflow.deleted",
+        "resourceType": "run",
+        "resourceId": run_id,
+        "projectId": run["projectId"],
+        "jiraKey": run.get("jiraKey"),
+        "summary": f"{auth['username']} deleted workflow history {run.get('jiraKey') or run_id}",
+    })
+    return {"ok": True}
+
+
+@router.post("/runs/bulk-delete")
+async def bulk_delete_runs(body: BulkDeleteBody, auth: dict = Depends(get_auth)):
+    if not body.runIds:
+        return {"deleted": 0}
+
+    deletable: list[str] = []
+    for run_id in body.runIds:
+        run = runs_repo.find_by_id(run_id)
+        if not run or run["mode"] != "workflow":
+            continue
+        try:
+            _assert_project_access(auth, run["projectId"])
+        except HttpError:
+            continue
+        if not _can_delete_run(auth, run):
+            continue
+        deletable.append(run_id)
+
+    for run_id in deletable:
+        _cancel_deploy_task(run_id)
+
+    deleted = runs_repo.delete_many(deletable)
+    if deleted:
+        activities_repo.create({
+            "userId": auth["sub"],
+            "username": auth["username"],
+            "action": "workflow.bulk_deleted",
+            "resourceType": "run",
+            "resourceId": None,
+            "summary": f"{auth['username']} deleted {deleted} workflow history record(s)",
+            "metadata": {"runIds": deletable},
+        })
+    return {"deleted": deleted}
 
 
 @router.patch("/runs/{run_id}/test-rate")

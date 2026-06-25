@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import { AGENT_DEFINITIONS } from '../layout/navConfig';
 import { StatusBadge } from '../ui/StatusBadge';
 import { ActivityFeed, buildActivityFeed, mapActivities } from './ActivityFeed';
-import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
 
 interface AgentConsoleProps {
   detail: RunDetail | null;
@@ -68,7 +68,7 @@ export function AgentConsole({ detail, runId, polling }: AgentConsoleProps) {
                 'rounded-lg border px-3 py-2',
                 activeAgent === a.id
                   ? 'border-brand-500/40 bg-brand-600/10'
-                  : 'border-slate-700/60 bg-[#0f0f1a]',
+                  : `${taskSurface}`,
               ].join(' ')}
             >
               <div className="flex items-center justify-between">

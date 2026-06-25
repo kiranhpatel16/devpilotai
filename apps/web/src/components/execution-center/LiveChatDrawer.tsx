@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { MessageCircle, X } from 'lucide-react';
 import { LiveChatPanel } from './LiveChatPanel';
-import { taskBtnPrimary } from './taskStyles';
+import { taskBtnPrimary, taskCard, taskDivider, taskIconBtn, taskTitle } from './taskStyles';
 
 interface LiveChatDrawerProps {
   projectId: string;
@@ -29,13 +29,13 @@ export function LiveChatDrawer({ projectId }: LiveChatDrawerProps) {
             aria-label="Close chat"
             onClick={() => setOpen(false)}
           />
-          <div className="relative flex h-full w-full max-w-md flex-col border-l border-slate-700/80 bg-[#12121f] shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-700/60 px-4 py-3">
-              <h2 className="text-sm font-semibold text-white">Ask DevPilot</h2>
+          <div className={`relative flex h-full w-full max-w-md flex-col border-l ${taskDivider} ${taskCard} shadow-2xl`}>
+            <div className={`flex items-center justify-between border-b ${taskDivider} px-4 py-3`}>
+              <h2 className={`text-sm font-semibold ${taskTitle}`}>Ask DevPilot</h2>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                className={taskIconBtn}
               >
                 <X className="h-4 w-4" />
               </button>

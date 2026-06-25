@@ -1,4 +1,5 @@
 import type { RunDetail } from '@cpwork/shared';
+import { taskAccent, taskHeading } from './taskStyles';
 
 interface TaskHeaderProps {
   detail: RunDetail | null;
@@ -27,11 +28,11 @@ export function TaskHeader({
   return (
     <div className="border-b border-surface-700 pb-4">
       <p className="text-xs text-slate-500">{projectName}</p>
-      {key && <p className="font-mono text-lg font-bold text-brand-400">{key}</p>}
+      {key && <p className={`font-mono text-lg font-bold ${taskAccent}`}>{key}</p>}
       {custom && !key && (
-        <p className="text-lg font-bold text-brand-400">Custom Task</p>
+        <p className={`text-lg font-bold ${taskAccent}`}>Custom Task</p>
       )}
-      {title && <h1 className="mt-1 text-xl font-semibold text-white">{title}</h1>}
+      {title && <h1 className={`mt-1 ${taskHeading}`}>{title}</h1>}
       {detail?.workflow && (
         <p className="mt-1 text-xs text-slate-500">
           Step: {detail.workflow.currentStep.replace(/_/g, ' ')}

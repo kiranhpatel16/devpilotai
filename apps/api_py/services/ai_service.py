@@ -1,12 +1,12 @@
 import time
-from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output
+from services.agent_output_validator import validate_agent_output, validate_deploy_fix_output, validate_test_fix_output
 from services.ai_providers.registry import get_adapter, resolve_creds
 from services.ai_providers.normalize import normalize_agent_output
 from services.prompt import build_prompt
 
 MAX_AGENT_RETRIES = 3
 MAX_DEPLOY_FIX_RETRIES = 5
-VALIDATED_MODES = frozenset({"agent", "deploy_fix"})
+VALIDATED_MODES = frozenset({"agent", "deploy_fix", "test_fix"})
 
 
 async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dict:
@@ -22,7 +22,11 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
     blocking_errors: list[str] = []
     warnings: list[str] = []
 
-    max_retries = MAX_DEPLOY_FIX_RETRIES if ctx.get("mode") == "deploy_fix" else MAX_AGENT_RETRIES
+    max_retries = (
+        MAX_DEPLOY_FIX_RETRIES
+        if ctx.get("mode") in ("deploy_fix", "test_fix")
+        else MAX_AGENT_RETRIES
+    )
 
     for attempt in range(max_retries + 1):
         attempt_ctx = dict(ctx)
@@ -59,7 +63,17 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
                 docker_compose_path=ctx.get("dockerComposePath"),
             )
             if ctx.get("mode") == "deploy_fix"
-            else validate_agent_output(cwd, output)
+            else (
+                validate_test_fix_output(
+                    cwd,
+                    output,
+                    ctx.get("testAnalysis") or {},
+                    php_bin=ctx.get("phpBin") or "php",
+                    docker_compose_path=ctx.get("dockerComposePath"),
+                )
+                if ctx.get("mode") == "test_fix"
+                else validate_agent_output(cwd, output)
+            )
         )
         blocking_errors = validation["blocking"]
         warnings = validation["warnings"]

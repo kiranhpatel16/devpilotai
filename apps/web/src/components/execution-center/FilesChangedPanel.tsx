@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { RunDetail } from '@cpwork/shared';
 import { DiffView } from '../DiffView';
-import { taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskDivider, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
 
 interface FilesChangedPanelProps {
   detail: RunDetail | null;
@@ -70,8 +70,8 @@ export function FilesChangedPanel({
                   className={[
                     'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-xs',
                     selectedPath === f.path || (!selectedPath && f === files[0])
-                      ? 'bg-brand-600/20 text-brand-300'
-                      : 'text-slate-400 hover:bg-slate-800',
+                      ? 'bg-brand-600/20 text-brand-700 dark:text-brand-300'
+                      : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-neutral-900',
                   ].join(' ')}
                 >
                   <span className={`rounded px-1 text-[10px] font-bold ${badge.className}`}>
@@ -119,7 +119,7 @@ export function FilesChangedPanel({
         )}
       </header>
       <div className="grid max-h-80 grid-cols-[minmax(140px,1fr)_2fr] overflow-hidden">
-        <ul className="overflow-y-auto border-r border-slate-700/60 p-2">
+        <ul className={`overflow-y-auto border-r ${taskDivider} p-2`}>
           {files.map((f) => {
             const badge = statusBadge(f.action ?? 'modify');
             return (
@@ -130,8 +130,8 @@ export function FilesChangedPanel({
                   className={[
                     'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-xs',
                     (selectedPath ?? files[0]?.path) === f.path
-                      ? 'bg-brand-600/20 text-brand-300'
-                      : 'text-slate-400 hover:bg-slate-800',
+                      ? 'bg-brand-600/20 text-brand-700 dark:text-brand-300'
+                      : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-neutral-900',
                   ].join(' ')}
                 >
                   <span className={`rounded px-1 text-[10px] font-bold ${badge.className}`}>
@@ -143,7 +143,7 @@ export function FilesChangedPanel({
             );
           })}
         </ul>
-        <div className="overflow-auto bg-[#0f0f1a] p-2">
+        <div className={`overflow-auto ${taskSurface} p-2`}>
           {selectedDiff && showDiff ? (
             <DiffView diff={selectedDiff} />
           ) : (

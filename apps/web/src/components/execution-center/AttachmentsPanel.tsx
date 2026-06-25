@@ -1,6 +1,6 @@
 import type { JiraAttachment } from '@cpwork/shared';
 import { Download, FileText, Image } from 'lucide-react';
-import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskAccent, taskBody, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
 
 interface AttachmentsPanelProps {
   attachments: JiraAttachment[];
@@ -21,10 +21,10 @@ export function AttachmentsPanel({ attachments }: AttachmentsPanelProps) {
               href={a.url}
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-3 rounded-lg border border-slate-700/60 bg-[#0f0f1a] p-2.5 transition-colors hover:border-brand-500/40"
+              className={`flex items-center gap-3 ${taskSurface} p-2.5 transition-colors hover:border-brand-500/40`}
             >
               {a.isImage ? (
-                <Image className="h-4 w-4 shrink-0 text-brand-400" />
+                <Image className={`h-4 w-4 shrink-0 ${taskAccent}`} />
               ) : (
                 <FileText className="h-4 w-4 shrink-0 text-slate-400" />
               )}

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { RunDetail } from '@cpwork/shared';
 import { ArrowLeft, ExternalLink, MoreVertical, Pause, Play, XCircle } from 'lucide-react';
 import { StatusBadge } from '../ui/StatusBadge';
-import { taskBtnDanger, taskBtnGhost, taskBtnPrimary, taskMuted } from './taskStyles';
+import { taskAccent, taskAccentHover, taskBtnDanger, taskBtnGhost, taskBtnPrimary, taskHeading, taskIconBtn, taskMuted } from './taskStyles';
 
 interface TaskActionBarProps {
   projectId: string;
@@ -44,6 +44,7 @@ export function TaskActionBar({
   canStart,
 }: TaskActionBarProps) {
   const key = detail?.run.jiraKey ?? selectedKey;
+  const customKey = detail?.workflow?.customTaskKey?.trim();
   const title =
     detail?.workflow?.jiraSnapshot?.summary ??
     taskSummary ??
@@ -69,17 +70,20 @@ export function TaskActionBar({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <Link
-            to={`/workspaces/${projectId}`}
-            className={`inline-flex items-center gap-1.5 text-sm ${taskMuted} transition-colors hover:text-slate-200`}
+            to={custom ? `/workspaces/${projectId}?tab=custom` : `/workspaces/${projectId}`}
+            className={`inline-flex items-center gap-1.5 text-sm ${taskMuted} transition-colors ${taskAccentHover}`}
           >
             <ArrowLeft className="h-4 w-4" />
             Back to tasks
           </Link>
           {key && (
-            <span className="font-mono text-sm font-bold text-brand-400">{key}</span>
+            <span className={`font-mono text-sm font-bold ${taskAccent}`}>{key}</span>
           )}
-          {custom && !key && (
-            <span className="text-sm font-bold text-brand-400">Custom Task</span>
+          {custom && !key && customKey && (
+            <span className={`font-mono text-sm font-bold ${taskAccent}`}>{customKey}</span>
+          )}
+          {custom && !key && !customKey && (
+            <span className={`text-sm font-bold ${taskAccent}`}>Custom Task</span>
           )}
           <StatusBadge
             label={isPaused ? 'Paused' : isCancelled ? 'Cancelled' : statusCategory}
@@ -142,7 +146,7 @@ export function TaskActionBar({
           )}
           <button
             type="button"
-            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+            className={taskIconBtn}
             aria-label="More actions"
           >
             <MoreVertical className="h-4 w-4" />
@@ -152,14 +156,14 @@ export function TaskActionBar({
 
       {/* Title + Jira link */}
       {title && (
-        <h1 className="text-xl font-semibold leading-snug text-white">{title}</h1>
+        <h1 className={taskHeading}>{title}</h1>
       )}
       {jiraUrl && (
         <a
           href={jiraUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1 text-sm text-brand-400 hover:underline"
+          className={`inline-flex items-center gap-1 text-sm ${taskAccent} hover:underline`}
         >
           Open in Jira <ExternalLink className="h-3.5 w-3.5" />
         </a>
@@ -170,14 +174,14 @@ export function TaskActionBar({
         {onStartCustom && (
           <button
             type="button"
-            className="hover:text-brand-400"
+            className={taskAccentHover}
             onClick={onStartCustom}
           >
             + New custom task
           </button>
         )}
         {onShowHistory && (
-          <button type="button" className="hover:text-brand-400" onClick={onShowHistory}>
+          <button type="button" className={taskAccentHover} onClick={onShowHistory}>
             View history
           </button>
         )}

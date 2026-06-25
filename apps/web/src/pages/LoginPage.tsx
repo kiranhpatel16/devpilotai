@@ -24,7 +24,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 transition-colors dark:bg-slate-900">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 transition-colors dark:bg-black">
       <div className="w-full max-w-sm">
         <div className="relative mb-6 text-center">
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">DevPilot AI</h1>

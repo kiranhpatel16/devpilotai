@@ -8,7 +8,7 @@ function lineClass(line: string): string {
 }
 
 export function DiffView({ diff }: { diff: FileDiff }) {
-  const lines = diff.patch.split('\n');
+  const lines = (diff.patch ?? '').split('\n');
   return (
     <pre className="overflow-x-auto rounded-md bg-slate-900 p-3 text-[11px] leading-relaxed">
       {lines.map((line, i) => (

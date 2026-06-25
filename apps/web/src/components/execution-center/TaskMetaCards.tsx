@@ -1,6 +1,6 @@
 import type { JiraIssueDetail, JiraTask } from '@cpwork/shared';
 import { Calendar, Flag, Tag, User } from 'lucide-react';
-import { taskBody, taskMuted, taskPanel } from './taskStyles';
+import { taskAccent, taskBody, taskMuted, taskPanel, taskTitle } from './taskStyles';
 
 interface TaskMetaCardsProps {
   issue: JiraIssueDetail | JiraTask | null;
@@ -20,12 +20,12 @@ function MetaCard({
 }) {
   return (
     <div className={`${taskPanel} flex items-center gap-3 p-3`}>
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-600/20 text-brand-400">
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-600/20 ${taskAccent}`}>
         <Icon className="h-4 w-4" />
       </div>
       <div className="min-w-0">
         <p className={`text-xs ${taskMuted}`}>{label}</p>
-        <p className={`truncate text-sm font-semibold ${valueClass ?? 'text-white'}`}>{value}</p>
+        <p className={`truncate text-sm font-semibold ${valueClass ?? taskTitle}`}>{value}</p>
       </div>
     </div>
   );
@@ -53,7 +53,7 @@ export function TaskMetaCards({ issue, jiraKey }: TaskMetaCardsProps) {
         icon={Flag}
         label="Priority"
         value={priority}
-        valueClass={isHigh ? 'text-red-400' : 'text-white'}
+        valueClass={isHigh ? 'text-red-500 dark:text-red-400' : taskTitle}
       />
       <MetaCard icon={User} label="Assignee" value={issue?.assignee ?? 'Unassigned'} />
       <MetaCard icon={Tag} label="Type" value={issue?.issueType ?? 'Story'} />

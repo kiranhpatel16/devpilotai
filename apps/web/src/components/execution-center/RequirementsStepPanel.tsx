@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import type { AiProviderInfo, JiraIssueDetail, Project, RunDetail } from '@cpwork/shared';
 import { ArrowRight, Loader2 } from 'lucide-react';
 import { getApiErrorMessage } from '../../lib/api';
+import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { advanceToPlanAndGenerate, isEarlyWorkflowStep } from '../../lib/workflowAdvance';
 import { AcceptanceCriteriaPanel } from './AcceptanceCriteriaPanel';
 import { AttachmentsPanel } from './AttachmentsPanel';
@@ -10,7 +11,7 @@ import { BranchSetupPanel } from './BranchSetupPanel';
 import { ProgressStrip } from './ProgressStrip';
 import { loadStoredNotes, RequirementNotesPanel } from './RequirementNotesPanel';
 import { TaskDetailsPanel } from './TaskDetailsPanel';
-import { taskBtnPrimary, taskInput, taskMuted } from './taskStyles';
+import { taskBtnPrimary, taskDivider, taskInput, taskMuted, taskStrong, taskSurface } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
 
 interface RequirementsStepPanelProps {
@@ -48,9 +49,10 @@ export function RequirementsStepPanel({
   const earlyStep = isEarlyWorkflowStep(wf?.currentStep);
   const setupComplete = !!detail && !earlyStep;
 
-  const [notes, setNotes] = useState(() =>
-    detail?.run.userInstructions ?? loadStoredNotes(taskKey),
-  );
+  const [notes, setNotes] = useState(() => {
+    if (detail?.run.id) return detail.run.userInstructions ?? '';
+    return loadStoredNotes(taskKey);
+  });
   const [branchName, setBranchName] = useState(
     detail?.run.branchName ?? taskKey ?? '',
   );
@@ -60,10 +62,11 @@ export function RequirementsStepPanel({
   const [model, setModel] = useState(detail?.run.model ?? '');
 
   useEffect(() => {
-    if (!detail) return;
-    if (detail.run.userInstructions != null) {
-      setNotes(detail.run.userInstructions);
+    if (!detail) {
+      if (taskKey) setNotes(loadStoredNotes(taskKey));
+      return;
     }
+    setNotes(detail.run.userInstructions ?? '');
     const p = detail.run.provider ?? providers[0]?.id ?? '';
     setBranchName(detail.run.branchName ?? taskKey ?? '');
     setProvider(p);
@@ -87,6 +90,8 @@ export function RequirementsStepPanel({
     onError: (err) => onError(getApiErrorMessage(err)),
   });
 
+  useWorkflowBusy('generate-plan', generateM.isPending, 'Generating plan…');
+
   const activeProvider = providers.find((p) => p.id === provider) ?? providers[0];
   const canGenerate =
     !!detail &&
@@ -104,6 +109,7 @@ export function RequirementsStepPanel({
           <TaskDetailsPanel
             issue={issue}
             customTitle={customTitle || wf?.customTitle || undefined}
+            customRequirements={wf?.customRequirements || undefined}
             createdBy={issue?.assignee}
             createdAt={issue?.updated}
             expanded
@@ -124,7 +130,7 @@ export function RequirementsStepPanel({
           />
 
           {preStart && custom && (
-            <div className="rounded-lg border border-slate-700/60 bg-[#1a1a2e] p-4">
+            <div className={`${taskSurface} p-4`}>
               <label className={`label ${taskMuted}`}>Custom task title</label>
               <input
                 className={taskInput}
@@ -169,13 +175,13 @@ export function RequirementsStepPanel({
 
       {preStart && (
         <p className={`text-center text-sm ${taskMuted}`}>
-          Use <strong className="text-slate-300">Start Task</strong> in the header to configure
+          Use <strong className={taskStrong}>Start Task</strong> in the header to configure
           branch and generate a plan.
         </p>
       )}
 
       {detail && earlyStep && (
-        <div className="flex justify-end border-t border-slate-700/60 pt-4">
+        <div className={`flex justify-end border-t ${taskDivider} pt-4`}>
           <button
             type="button"
             className={taskBtnPrimary}

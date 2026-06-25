@@ -24,9 +24,16 @@ import { AdminAiRulesPage } from './pages/admin/AdminAiRulesPage';
 import { MyEnvironmentsPage } from './pages/MyEnvironmentsPage';
 
 export default function App() {
-  const { session } = useAuth();
+  const { session, loading } = useAuth();
 
-  // No session → login immediately (never block on /auth/me).
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-black">
+        <p className="text-sm text-slate-500">Loading…</p>
+      </div>
+    );
+  }
+
   if (!session) {
     return (
       <Routes>
@@ -37,7 +44,7 @@ export default function App() {
   }
 
   const admin = isAdminRole(session.user.globalRole);
-  const home = '/workspaces';
+  const home = '/';
 
   return (
     <Routes>

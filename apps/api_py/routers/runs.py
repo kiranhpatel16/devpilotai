@@ -22,6 +22,7 @@ from services.testing_service import run_tests
 from services.agent_output_validator import (
     validate_agent_output,
     validate_deploy_fix_output,
+    validate_test_fix_output,
     lint_deploy_fix_php_syntax,
 )
 from services.run_detail import load_detail, patch_detail
@@ -247,10 +248,17 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
 
     resolved = resolve_environment(run["userId"], run["projectId"])
     deploy = detail.get("deploy")
+    prior_test = detail.get("test")
     is_deploy_fix = (
         run["mode"] == "workflow"
         and deploy
         and (deploy.get("lastFix") or {}).get("status") == "proposed"
+    )
+    is_test_fix = (
+        run["mode"] == "workflow"
+        and prior_test
+        and (prior_test.get("lastFix") or {}).get("status") == "proposed"
+        and not is_deploy_fix
     )
     if is_deploy_fix:
         validation_errors = validate_deploy_fix_output(
@@ -260,13 +268,25 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
             php_bin=resolved["env"].get("phpBin") or "php",
             docker_compose_path=resolved["env"].get("dockerComposePath"),
         )
+    elif is_test_fix:
+        validation_errors = validate_test_fix_output(
+            resolved["cwd"],
+            detail["output"],
+            (prior_test or {}).get("analysis") or {},
+            php_bin=resolved["env"].get("phpBin") or "php",
+            docker_compose_path=resolved["env"].get("dockerComposePath"),
+        )
     else:
         validation_errors = validate_agent_output(resolved["cwd"], detail["output"])
     if validation_errors["blocking"]:
         message = (
             "Cannot apply deploy fix — the proposal does not resolve the error. Regenerate fix. "
             if is_deploy_fix
-            else "Cannot apply incomplete/stub code. Re-run the agent to generate full implementations. "
+            else (
+                "Cannot apply test fix — the proposal is incomplete. Regenerate fix. "
+                if is_test_fix
+                else "Cannot apply incomplete/stub code. Re-run the agent to generate full implementations. "
+            )
         )
         raise HttpError(
             422,
@@ -319,6 +339,18 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
                 "status": "applied",
                 "appliedAt": now_iso(),
             },
+        }
+    if is_test_fix and prior_test:
+        last_fix_patch = {
+            **(prior_test.get("lastFix") or {}),
+            "status": "applied" if test_report.get("ok") else "failed",
+            "appliedAt": now_iso(),
+        }
+        if not test_report.get("ok"):
+            last_fix_patch["failedAt"] = now_iso()
+        patch["test"] = {
+            **test_report,
+            "lastFix": last_fix_patch,
         }
     patch_detail(run_id, patch)
     runs_repo.update_status(run_id, "testing")

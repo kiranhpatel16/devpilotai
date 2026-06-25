@@ -8,12 +8,14 @@ import type {
   TaskWorkflowStep,
 } from '@cpwork/shared';
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
+import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { RunPanel } from '../RunPanel';
 import { previousStep } from './constants';
 import {
   DeployProgressModal,
   type DeployPipelinePhase,
 } from './DeployProgressModal';
+import type { WorkflowTab } from '../execution-center/WorkflowTabs';
 import { SelectedJiraTaskCard } from './SelectedJiraTaskCard';
 
 function sleep(ms: number): Promise<void> {
@@ -70,6 +72,7 @@ export function WorkflowStepContent({
   onNavigate,
   onShowHistory,
   onStartNewTask,
+  onWorkflowTabChange,
   hideSetupSteps,
 }: {
   detail: RunDetail;
@@ -79,10 +82,18 @@ export function WorkflowStepContent({
   onNavigate: (step: TaskWorkflowStep) => void;
   onShowHistory?: () => void;
   onStartNewTask?: () => void;
+  onWorkflowTabChange?: (tab: WorkflowTab) => void;
   /** When true, select/branch/describe UIs are omitted (handled on Requirements tab). */
   hideSetupSteps?: boolean;
 }) {
-  const wf = detail.workflow!;
+  const wf = detail.workflow;
+  if (!wf) {
+    return (
+      <p className="text-sm text-slate-500">
+        Workflow state is missing for this run. Try restoring the task from history.
+      </p>
+    );
+  }
   const run = detail.run;
   const jira = wf.jiraSnapshot as JiraIssueDetail | null;
   const [branchName, setBranchName] = useState(run.branchName || run.jiraKey || '');
@@ -159,7 +170,12 @@ export function WorkflowStepContent({
       (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/run-agent`, undefined, longRequest))
         .data.detail,
     onMutate: () => setError(null),
-    onSuccess: (d) => onChange(d),
+    onSuccess: (d) => {
+      onChange(d);
+      if (d.workflow?.currentStep === 'code_review') {
+        onWorkflowTabChange?.('review');
+      }
+    },
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
@@ -338,6 +354,18 @@ export function WorkflowStepContent({
   });
 
   const step = wf.currentStep;
+
+  useWorkflowBusy('save-step', saveStepM.isPending, 'Saving…');
+  useWorkflowBusy('generate-plan', generatePlanM.isPending, 'Generating plan…');
+  useWorkflowBusy('run-agent', runAgentM.isPending, 'Developer agent generating code…');
+  useWorkflowBusy('approve-plan', approvePlanM.isPending, 'Approving plan…');
+  useWorkflowBusy('approve-code', approveCodeM.isPending, 'Approving code…');
+  useWorkflowBusy(
+    'workflow-deploy',
+    pipelineRunning || deployM.isPending || completeDeployM.isPending || deployFixing || deployApplying,
+    deployFixing ? 'AI agent fixing deploy error…' : 'Running local deploy…',
+  );
+  useWorkflowBusy('post-jira', postJiraM.isPending, 'Posting to Jira…');
 
   const savedPlanQ = useQuery({
     queryKey: ['saved-plan', run.id, wf.planFilePath],
@@ -659,6 +687,7 @@ export function WorkflowStepContent({
           )}
           <StepActions step={step} onBack={goBack}>
             <button
+              type="button"
               className="btn-primary"
               disabled={runAgentM.isPending}
               onClick={() => runAgentM.mutate()}
@@ -666,6 +695,24 @@ export function WorkflowStepContent({
               {runAgentM.isPending ? 'Agent running…' : 'Run agent →'}
             </button>
           </StepActions>
+        </div>
+      )}
+
+      {step === 'code_review' && detail.output && hideSetupSteps && (
+        <div className="card space-y-3 p-4">
+          <p className="text-sm text-slate-600">
+            Code generation finished. Open the <strong>Review</strong> tab to inspect diffs and apply
+            changes.
+          </p>
+          {onWorkflowTabChange && (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => onWorkflowTabChange('review')}
+            >
+              Go to Review →
+            </button>
+          )}
         </div>
       )}
 

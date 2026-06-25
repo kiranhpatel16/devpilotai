@@ -7,6 +7,14 @@ export function isEarlyWorkflowStep(step: TaskWorkflowStep | null | undefined): 
   return !!step && EARLY_STEPS.includes(step);
 }
 
+/** Plan approved on the Code step — user must click Run agent before work starts. */
+export function isAgentStepAwaitingRun(detail: RunDetail | null | undefined): boolean {
+  const wf = detail?.workflow;
+  if (!wf || wf.currentStep !== 'agent') return false;
+  // Plan generation stores its AI response in `output`; rely on approval status instead.
+  return wf.approvalStatus === 'plan_approved';
+}
+
 interface AdvanceSetupInput {
   branchName: string;
   provider: string | null;

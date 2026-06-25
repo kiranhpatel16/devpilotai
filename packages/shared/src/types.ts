@@ -455,6 +455,8 @@ export interface TaskRunState {
   completedSteps: TaskWorkflowStep[];
   jiraSnapshot: JiraIssueDetail | null;
   customTitle: string | null;
+  customTaskKey: string | null;
+  customRequirements: string | null;
   planMarkdown: string | null;
   planFilePath: string | null;
   planApprovedAt: string | null;
@@ -468,7 +470,15 @@ export interface TaskRunState {
 
 export interface TaskHistoryRow {
   runId: string;
+  projectId?: string;
+  projectName?: string | null;
+  userId?: string;
+  username?: string | null;
+  displayName?: string | null;
   jiraKey: string | null;
+  customTitle: string | null;
+  customTaskKey: string | null;
+  customRequirements: string | null;
   branchName: string | null;
   provider: string | null;
   model: string | null;
@@ -478,4 +488,18 @@ export interface TaskHistoryRow {
   summary: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TaskHistoryFilterUser {
+  userId: string;
+  username: string;
+  displayName: string;
+}
+
+export interface TaskHistoryPage {
+  rows: TaskHistoryRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  filterUsers: TaskHistoryFilterUser[];
 }

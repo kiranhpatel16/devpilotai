@@ -1,5 +1,5 @@
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
-import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskAccent, taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
 
 interface PlanOverviewPanelProps {
   planMarkdown: string | null;
@@ -59,7 +59,7 @@ export function PlanOverviewPanel({ planMarkdown, currentStep, preStart }: PlanO
             {item.done ? (
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
             ) : item.active || (isCoding && i === items.length - 1) ? (
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-brand-400" />
+              <Loader2 className={`mt-0.5 h-4 w-4 shrink-0 animate-spin ${taskAccent}`} />
             ) : (
               <Circle className={`mt-0.5 h-4 w-4 shrink-0 ${taskMuted}`} />
             )}
@@ -68,7 +68,7 @@ export function PlanOverviewPanel({ planMarkdown, currentStep, preStart }: PlanO
                 item.done
                   ? `${taskMuted} line-through`
                   : item.active
-                    ? `font-medium text-white`
+                    ? `font-medium ${taskTitle}`
                     : taskBody
               }
             >

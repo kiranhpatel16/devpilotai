@@ -37,7 +37,7 @@ function SectionCard({
   return (
     <section
       className={[
-        'rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800/90',
+        'rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900/90',
         className,
       ].join(' ')}
     >
@@ -685,7 +685,7 @@ export function WorkspaceSettingsPanel({
               )}
             </Field>
 
-            <div className="border-t border-slate-200 pt-4 dark:border-slate-700">
+            <div className="border-t border-slate-200 pt-4 dark:border-neutral-800">
               <h4 className="mb-3 text-sm font-medium text-slate-700 dark:text-slate-200">
                 Jira Configuration
               </h4>
@@ -731,7 +731,7 @@ export function WorkspaceSettingsPanel({
               </div>
             </div>
 
-            <div className="border-t border-slate-200 pt-4 dark:border-slate-700">
+            <div className="border-t border-slate-200 pt-4 dark:border-neutral-800">
               <h4 className="mb-3 text-sm font-medium text-slate-700 dark:text-slate-200">
                 My Jira Identity
               </h4>
@@ -800,7 +800,7 @@ export function WorkspaceSettingsPanel({
       )}
 
       {/* Footer actions */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5 dark:border-slate-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5 dark:border-neutral-800">
         {admin ? (
           <button
             type="button"

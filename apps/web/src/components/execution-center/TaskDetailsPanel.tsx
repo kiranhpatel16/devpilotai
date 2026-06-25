@@ -1,9 +1,10 @@
 import type { JiraIssueDetail } from '@cpwork/shared';
-import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
 
 interface TaskDetailsPanelProps {
   issue: JiraIssueDetail | null;
   customTitle?: string;
+  customRequirements?: string;
   createdBy?: string | null;
   createdAt?: string | null;
   expanded?: boolean;
@@ -12,11 +13,16 @@ interface TaskDetailsPanelProps {
 export function TaskDetailsPanel({
   issue,
   customTitle,
+  customRequirements,
   createdBy,
   createdAt,
   expanded,
 }: TaskDetailsPanelProps) {
-  const description = issue?.description?.trim() || customTitle || '(no description)';
+  const description =
+    issue?.description?.trim() ||
+    customRequirements?.trim() ||
+    customTitle ||
+    '(no description)';
   const labels = issue?.labels ?? [];
 
   return (
@@ -27,7 +33,7 @@ export function TaskDetailsPanel({
       <div className="space-y-3 p-4">
         <div
           className={[
-            `rounded-lg border border-slate-700/60 bg-[#0f0f1a] px-3 py-3 text-sm ${taskBody} whitespace-pre-wrap`,
+            `${taskSurface} px-3 py-3 text-sm ${taskBody} whitespace-pre-wrap`,
             expanded ? 'max-h-none' : 'max-h-48 overflow-y-auto',
           ].join(' ')}
         >

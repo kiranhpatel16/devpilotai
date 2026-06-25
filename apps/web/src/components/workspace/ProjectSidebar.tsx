@@ -37,7 +37,7 @@ export function ProjectSidebar({
                 'flex w-full flex-col rounded-lg border px-3 py-2 text-left transition-colors',
                 active
                   ? 'border-brand-400 bg-brand-50 dark:border-brand-500 dark:bg-brand-600/15'
-                  : 'border-slate-200 bg-white hover:border-brand-300 dark:border-slate-700 dark:bg-slate-800/80 dark:hover:border-brand-500/40',
+                  : 'border-slate-200 bg-white hover:border-brand-300 dark:border-neutral-800 dark:bg-neutral-900/80 dark:hover:border-brand-500/40',
               ].join(' ')}
             >
               <span className="text-sm font-medium text-slate-900 dark:text-white">{p.name}</span>

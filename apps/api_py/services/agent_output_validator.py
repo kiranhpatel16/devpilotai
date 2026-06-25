@@ -257,6 +257,70 @@ def validate_deploy_fix_output(
     return {"blocking": blocking, "warnings": warnings}
 
 
+def validate_test_fix_output(
+    cwd: str,
+    output: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    php_bin: str | None = None,
+    docker_compose_path: str | None = None,
+) -> dict[str, list[str]]:
+    """Validate test-fix proposals — must target failing files and apply cleanly."""
+    blocking: list[str] = []
+    warnings: list[str] = []
+    files = output.get("files") or []
+    error_files = {p.replace("\\", "/") for p in (analysis.get("errorFiles") or []) if p}
+
+    if not files:
+        blocking.append("No files were proposed for the test failure.")
+        return {"blocking": blocking, "warnings": warnings}
+
+    proposed_paths: set[str] = set()
+    for change in files:
+        path = (change.get("path") or "").replace("\\", "/")
+        if not path:
+            continue
+        proposed_paths.add(path)
+
+        if change.get("action") == "delete":
+            continue
+
+        resolved = resolve_new_content(cwd, change)
+        if resolved.get("error"):
+            blocking.append(f"{path}: {resolved['error']}")
+            continue
+
+        proposed_content = resolved.get("content") or ""
+        if change.get("action") == "modify":
+            current = _read_if_exists(_safe_join(cwd, path))
+            if current == proposed_content:
+                blocking.append(
+                    f"{path}: proposed fix leaves the file unchanged — tests would fail again."
+                )
+
+        if PHP_CODE_FILE_RE.search(path) and proposed_content:
+            from services.php_lint import lint_php_content_for_project
+
+            lint_error = lint_php_content_for_project(
+                cwd,
+                proposed_content,
+                php_bin=php_bin,
+                docker_compose_path=docker_compose_path,
+            )
+            if lint_error:
+                blocking.append(
+                    f"{path}: {lint_error} — use action=modify with FULL corrected file content (not edits)."
+                )
+
+    if error_files and not (proposed_paths & error_files):
+        blocking.append(
+            "Fix must edit at least one file named in the test failure: "
+            + ", ".join(sorted(error_files)[:5])
+        )
+
+    return {"blocking": blocking, "warnings": warnings}
+
+
 def _lint_php_content(php_bin: str, content: str) -> str | None:
     from services.php_lint import lint_php_content, resolve_php_lint_bin
 

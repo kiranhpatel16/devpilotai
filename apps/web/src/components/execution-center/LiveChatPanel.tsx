@@ -4,10 +4,12 @@ import { Send } from 'lucide-react';
 import { api, getApiErrorMessage } from '../../lib/api';
 import {
   taskBtnPrimary,
+  taskDivider,
   taskInput,
   taskMuted,
   taskPanel,
   taskPanelHeader,
+  taskSurface,
   taskTitle,
 } from './taskStyles';
 
@@ -66,12 +68,12 @@ export function LiveChatPanel({ projectId }: LiveChatPanelProps) {
         <h3 className={taskTitle}>Ask DevPilot</h3>
       </header>
       <div className="flex max-h-72 flex-1 flex-col overflow-hidden">
-        <div className="flex flex-wrap gap-1.5 border-b border-slate-700/60 p-2">
+        <div className={`flex flex-wrap gap-1.5 border-b ${taskDivider} p-2`}>
           {SUGGESTED_PROMPTS.map((p) => (
             <button
               key={p}
               type="button"
-              className="rounded-full border border-slate-600 bg-[#0f0f1a] px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-brand-500/50 hover:text-brand-300"
+              className={`rounded-full border border-slate-300 ${taskSurface} px-2.5 py-1 text-[11px] ${taskMuted} transition-colors hover:border-brand-500/50 hover:text-brand-600 dark:border-neutral-700 dark:hover:text-brand-300`}
               onClick={() => askPrompt(p)}
             >
               {p}
@@ -90,8 +92,8 @@ export function LiveChatPanel({ projectId }: LiveChatPanelProps) {
               className={[
                 'rounded-lg px-3 py-2 text-xs',
                 m.role === 'user'
-                  ? 'ml-4 bg-brand-600/20 text-slate-200'
-                  : 'mr-4 bg-[#0f0f1a] text-slate-400',
+                  ? 'ml-4 bg-brand-600/20 text-slate-800 dark:text-slate-200'
+                  : `mr-4 ${taskSurface} ${taskMuted}`,
               ].join(' ')}
             >
               {m.text}
@@ -101,7 +103,7 @@ export function LiveChatPanel({ projectId }: LiveChatPanelProps) {
             <p className="text-xs text-red-400">{getApiErrorMessage(askM.error)}</p>
           )}
         </div>
-        <form onSubmit={handleSubmit} className="border-t border-slate-700/60 p-2">
+        <form onSubmit={handleSubmit} className={`border-t ${taskDivider} p-2`}>
           <div className="flex gap-2">
             <input
               className={`${taskInput} flex-1 text-sm`}

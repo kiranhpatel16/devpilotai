@@ -1,5 +1,5 @@
 import type { RunDetail } from '@cpwork/shared';
-import { taskMuted } from './taskStyles';
+import { taskBody, taskMuted, taskSurface, taskTitle } from './taskStyles';
 
 interface ProgressStripProps {
   detail?: RunDetail | null;
@@ -9,7 +9,8 @@ interface ProgressStripProps {
 function computeProgress(detail: RunDetail | null | undefined, preStart?: boolean): number {
   if (preStart || !detail?.workflow) return 0;
   const total = 11;
-  return Math.min(100, Math.round((detail.workflow.completedSteps.length / total) * 100));
+  const completed = detail.workflow.completedSteps?.length ?? 0;
+  return Math.min(100, Math.round((completed / total) * 100));
 }
 
 export function ProgressStrip({ detail, preStart }: ProgressStripProps) {
@@ -20,18 +21,18 @@ export function ProgressStrip({ detail, preStart }: ProgressStripProps) {
     : 0;
 
   return (
-    <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-700/60 bg-[#0f0f1a] px-3 py-2 text-xs">
+    <div className={`flex flex-wrap items-center gap-4 ${taskSurface} px-3 py-2 text-xs`}>
       <div className="flex min-w-[120px] flex-1 items-center gap-2">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-700">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-neutral-800">
           <div
             className="h-full rounded-full bg-brand-600 transition-all"
             style={{ width: `${Math.max(pct, 2)}%` }}
           />
         </div>
-        <span className="font-medium text-white">{pct}%</span>
+        <span className={`font-medium ${taskTitle}`}>{pct}%</span>
       </div>
       <span className={taskMuted}>
-        Elapsed <span className="text-slate-200">{elapsed}m</span>
+        Elapsed <span className="text-slate-700 dark:text-slate-200">{elapsed}m</span>
       </span>
       {detail?.run.provider && (
         <span className={taskMuted}>
