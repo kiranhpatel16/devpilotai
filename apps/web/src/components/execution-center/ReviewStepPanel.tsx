@@ -7,6 +7,8 @@ import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { DiffView } from '../DiffView';
 import { previousStep } from '../task-workflow/constants';
 import {
+  taskAccent,
+  taskAccentHover,
   taskBody,
   taskBtnGhost,
   taskBtnPrimary,
@@ -20,6 +22,7 @@ import {
   taskStrong,
   taskSurface,
   taskTitle,
+  taskWarningText,
 } from './taskStyles';
 
 interface ReviewStepPanelProps {
@@ -60,8 +63,15 @@ export function ReviewStepPanel({
   const files = output?.files ?? [];
   const manualTestChecklist = output?.manualTestChecklist ?? [];
   const risks = output?.risks ?? [];
+  const validationErrors = output?.validationErrors ?? [];
+  const validationWarnings = output?.validationWarnings ?? [];
+  const diffErrors = diffs
+    .filter((d) => d.error)
+    .map((d) => `${d.path}: ${d.error}`);
+  const hasBlockingIssues = validationErrors.length > 0 || diffErrors.length > 0;
   const activePath = selectedPath ?? files[0]?.path ?? diffs[0]?.path ?? null;
   const selectedDiff = diffs.find((d) => d.path === activePath) ?? diffs[0];
+  const activeFile = files.find((f) => f.path === activePath);
 
   useEffect(() => {
     const bad = new Set(diffs.filter((d) => d.error).map((d) => d.path));
@@ -145,9 +155,42 @@ export function ReviewStepPanel({
         </div>
       )}
 
-      {detail.error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-          {detail.error}
+      {(detail.error || hasBlockingIssues) && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/40 dark:bg-amber-950/40">
+          <p className={`text-sm font-semibold ${taskWarningText}`}>
+            {detail.error ? 'Review before apply' : 'Issues to fix before apply'}
+          </p>
+          {detail.error && (
+            <p className={`mt-1 text-sm ${taskBody}`}>{detail.error}</p>
+          )}
+          {!detail.error && validationErrors.length > 0 && (
+            <p className={`mt-1 text-xs ${taskBody}`}>
+              Some files still contain stub or incomplete code. Use Request changes below, then apply
+              when resolved.
+            </p>
+          )}
+          {(validationErrors.length > 0 || diffErrors.length > 0) && (
+            <ul className="mt-2 space-y-1.5">
+              {[...validationErrors, ...diffErrors].map((msg) => (
+                <li key={msg} className={taskRiskItem}>
+                  {msg}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {validationWarnings.length > 0 && (
+        <div className={`${taskSurface} p-3`}>
+          <p className={`text-sm font-semibold ${taskTitle}`}>Suggestions</p>
+          <ul className="mt-2 space-y-1.5">
+            {validationWarnings.map((msg) => (
+              <li key={msg} className={`text-xs leading-relaxed ${taskBody}`}>
+                • {msg}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -159,12 +202,27 @@ export function ReviewStepPanel({
         >
           <div className="flex flex-col border-b border-slate-200 dark:border-neutral-800/60 lg:border-b-0 lg:border-r">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800/60 px-3 py-2.5">
-              <h3 className={taskTitle}>Files ({files.length})</h3>
+              <div>
+                <h3 className={taskTitle}>Files ({files.length})</h3>
+                {!detail.applied && files.length > 0 && (
+                  <p className={`mt-0.5 text-[10px] ${taskMuted}`}>
+                    {selected.length} selected
+                    {selected.length !== files.length ? ` of ${files.length}` : ''}
+                  </p>
+                )}
+              </div>
               {!detail.applied && (
                 <button
                   type="button"
                   className={`${taskBtnPrimary} px-2 py-1 text-xs`}
-                  disabled={applyM.isPending || selected.length === 0}
+                  disabled={applyM.isPending || selected.length === 0 || hasBlockingIssues}
+                  title={
+                    hasBlockingIssues
+                      ? 'Fix quality issues before applying'
+                      : selected.length === 0
+                        ? 'Select at least one file'
+                        : undefined
+                  }
                   onClick={() => applyM.mutate()}
                 >
                   {applyM.isPending ? '…' : `Apply ${selected.length}`}
@@ -264,7 +322,27 @@ export function ReviewStepPanel({
             </div>
             <div className={`flex-1 overflow-auto ${taskCodeSurface} p-3`}>
               {selectedDiff?.error ? (
-                <p className="text-xs text-red-400">{selectedDiff.error}</p>
+                <div className="space-y-3">
+                  <p className={`text-xs ${taskWarningText}`}>{selectedDiff.error}</p>
+                  {activeFile?.content ? (
+                    <>
+                      <p className={`text-xs ${taskMuted}`}>
+                        Proposed file content (agent used modify on a new file — shown below):
+                      </p>
+                      <pre className={`overflow-x-auto rounded-md p-3 text-[11px] leading-relaxed ${taskBody}`}>
+                        {activeFile.content}
+                      </pre>
+                    </>
+                  ) : activeFile?.action === 'create' && activeFile.content ? (
+                    <pre className={`overflow-x-auto rounded-md p-3 text-[11px] leading-relaxed ${taskBody}`}>
+                      {activeFile.content}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : viewMode === 'file' && activeFile?.content ? (
+                <pre className={`overflow-x-auto rounded-md p-3 text-[11px] leading-relaxed ${taskBody}`}>
+                  {activeFile.content}
+                </pre>
               ) : selectedDiff ? (
                 <DiffView diff={selectedDiff} />
               ) : (
@@ -282,7 +360,25 @@ export function ReviewStepPanel({
           </label>
           <p className={`mb-2 text-xs ${taskMuted}`}>
             Describe what to change — the agent will update the proposal.
+            {hasBlockingIssues && ' Quality issues listed above are sent automatically with your request.'}
           </p>
+          {hasBlockingIssues && !refineText.trim() && (
+            <button
+              type="button"
+              className={`mb-2 text-xs ${taskAccent} ${taskAccentHover}`}
+              onClick={() =>
+                setRefineText(
+                  'Replace all stub/placeholder code with full implementations. ' +
+                    'New PHPUnit test files must use action=create with full file content. ' +
+                    'Keep every file from the current proposal — do not drop implementation files.\n\n' +
+                    'Issues to fix:\n' +
+                    [...validationErrors, ...diffErrors].map((e) => `- ${e}`).join('\n'),
+                )
+              }
+            >
+              Insert suggested fix request
+            </button>
+          )}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
             <textarea
               className={`${taskInput} min-h-[72px] flex-1 resize-y`}

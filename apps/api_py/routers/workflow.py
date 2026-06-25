@@ -640,14 +640,9 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         output = ai_result["output"]
         validation = ai_result.get("validation") or {}
         blocking = validation.get("blocking") or output.get("validationErrors") or []
-        if blocking:
-            runs_repo.set_error(
-                run_id,
-                "Agent completed with quality issues (review before apply): "
-                + "; ".join(blocking[:3]),
-            )
-        else:
-            runs_repo.set_error(run_id, None)
+        from services.agent_output_validator import quality_error_message
+
+        runs_repo.set_error(run_id, quality_error_message(blocking))
 
         diffs = compute_diffs(resolved["cwd"], output["files"]) if output.get("files") else []
         git = await get_status(resolved["cwd"], resolved["project"]["git"]["productionBranch"])

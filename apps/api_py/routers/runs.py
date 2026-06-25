@@ -16,6 +16,7 @@ from services.repo_context import enrich_repo_context
 from services.git_service import (
     apply_changes, capture_backups, commit_all, compute_diffs,
     create_branch, get_status, push_branch, revert_changes,
+    merge_refined_files, normalize_file_changes,
 )
 from services.pr_service import create_pull_request
 from services.testing_service import run_tests
@@ -24,6 +25,7 @@ from services.agent_output_validator import (
     validate_deploy_fix_output,
     validate_test_fix_output,
     lint_deploy_fix_php_syntax,
+    quality_error_message,
 )
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
@@ -379,10 +381,35 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
     provider = _pick_provider(run.get("provider"))
 
     try:
-        task_text = " ".join(filter(None, [run["jiraKey"], run["userInstructions"],
-                                           detail["output"].get("summary"), body.instructions, run["branchName"]]))
+        prior_output = detail["output"]
+        prior_blocking = (
+            prior_output.get("validationErrors")
+            or validate_agent_output(resolved["cwd"], prior_output)["blocking"]
+        )
+        refine_instructions = body.instructions.strip()
+        if prior_blocking:
+            issue_list = "\n".join(f"- {err}" for err in prior_blocking)
+            refine_instructions = (
+                f"{refine_instructions}\n\n"
+                "Fix these quality issues in the current proposal (replace stub/placeholder code "
+                "with full implementations — do not drop unrelated files):\n"
+                f"{issue_list}"
+            ).strip()
+
+        task_text = " ".join(filter(None, [
+            run["jiraKey"],
+            run["userInstructions"],
+            prior_output.get("summary"),
+            body.instructions,
+            run["branchName"],
+            *prior_blocking,
+        ]))
         repo = enrich_repo_context(
-            resolved["cwd"], task_text, resolved["project"].get("frontendTheme"),
+            resolved["cwd"],
+            task_text,
+            resolved["project"].get("frontendTheme"),
+            plan_markdown=detail.get("planMarkdown"),
+            prior_output=prior_output,
         )
         ai_result = await run_ai(provider, run.get("model"), {
             "project": resolved["project"],
@@ -396,14 +423,32 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
             "activeTheme": resolved["project"].get("frontendTheme"),
             "repoOverview": repo["overview"],
             "fileExcerpts": repo["excerpts"],
-            "priorOutput": detail["output"],
-            "refineInstructions": body.instructions,
+            "priorOutput": prior_output,
+            "refineInstructions": refine_instructions,
+            "validationErrors": prior_blocking,
+            "approvedPlanMarkdown": detail.get("planMarkdown"),
         })
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
+        output["files"] = merge_refined_files(
+            prior_output.get("files") or [],
+            output.get("files") or [],
+        )
+        output["files"] = normalize_file_changes(resolved["cwd"], output["files"])
+        post_merge_validation = validate_agent_output(resolved["cwd"], output)
+        blocking = post_merge_validation["blocking"]
+        warnings = post_merge_validation["warnings"]
+        if blocking:
+            output["validationErrors"] = blocking
+        else:
+            output.pop("validationErrors", None)
+        if warnings:
+            output["validationWarnings"] = warnings
+        else:
+            output.pop("validationWarnings", None)
         diffs = compute_diffs(resolved["cwd"], output["files"]) if output["files"] else []
         patch_detail(run_id, {"output": output, "diffs": diffs, "usage": ai_result["usage"], "applied": False, "backups": [], "test": None})
-        runs_repo.set_error(run_id, None)
+        runs_repo.set_error(run_id, quality_error_message(blocking))
         runs_repo.update_status(run_id, "awaiting_review", output.get("summary") or None)
         return {"detail": _assemble_detail(run_id)}
     except Exception as err:

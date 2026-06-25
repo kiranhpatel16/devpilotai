@@ -45,6 +45,9 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
         total_output_tokens += result.get("outputTokens") or 0
 
         output = normalize_agent_output(result["content"])
+        if cwd:
+            from services.git_service import normalize_file_changes
+            output["files"] = normalize_file_changes(cwd, output.get("files") or [])
         last_output = output
 
         if ctx.get("mode") not in VALIDATED_MODES:

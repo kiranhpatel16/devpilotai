@@ -159,7 +159,7 @@ def validate_agent_output(cwd: str, output: dict[str, Any]) -> dict[str, list[st
 
         resolved = resolve_new_content(cwd, change)
         if resolved.get("error"):
-            warnings.append(f"{path}: {resolved['error']}")
+            blocking.append(f"{path}: {resolved['error']}")
             if change.get("action") == "create" and change.get("content"):
                 content = change.get("content") or ""
             else:
@@ -187,6 +187,15 @@ def has_blocking_issues(cwd: str, output: dict[str, Any]) -> bool:
 
 def blocking_issues(cwd: str, output: dict[str, Any]) -> list[str]:
     return validate_agent_output(cwd, output)["blocking"]
+
+
+def quality_error_message(blocking: list[str]) -> str | None:
+    if not blocking:
+        return None
+    return (
+        "Agent completed with quality issues (review before apply): "
+        + "; ".join(blocking[:3])
+    )
 
 
 def validate_deploy_fix_output(
