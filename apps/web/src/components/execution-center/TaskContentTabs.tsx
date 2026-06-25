@@ -1,3 +1,5 @@
+import { taskAccent, taskDivider, taskMuted } from './taskStyles';
+
 export type TaskContentTab = 'details' | 'plan' | 'files' | 'code' | 'activity';
 
 const TABS: { id: TaskContentTab; label: string }[] = [
@@ -15,7 +17,7 @@ interface TaskContentTabsProps {
 
 export function TaskContentTabs({ active, onChange }: TaskContentTabsProps) {
   return (
-    <nav className="flex flex-wrap gap-1 border-b border-slate-700/60" aria-label="Task content">
+    <nav className={`flex flex-wrap gap-1 border-b ${taskDivider}`} aria-label="Task content">
       {TABS.map((t) => (
         <button
           key={t.id}
@@ -24,8 +26,8 @@ export function TaskContentTabs({ active, onChange }: TaskContentTabsProps) {
           className={[
             'relative px-4 py-2.5 text-sm font-medium transition-colors',
             active === t.id
-              ? 'text-brand-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-brand-500'
-              : 'text-slate-500 hover:text-slate-300',
+              ? `${taskAccent} after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-brand-500`
+              : `${taskMuted} hover:text-slate-700 dark:hover:text-slate-300`,
           ].join(' ')}
         >
           {t.label}

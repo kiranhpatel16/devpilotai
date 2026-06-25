@@ -3,8 +3,8 @@ type StatusVariant = 'online' | 'busy' | 'offline' | 'default';
 const VARIANTS: Record<StatusVariant, string> = {
   online: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400',
   busy: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
-  offline: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400',
-  default: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+  offline: 'bg-slate-100 text-slate-600 dark:bg-neutral-800 dark:text-slate-400',
+  default: 'bg-slate-100 text-slate-600 dark:bg-neutral-800 dark:text-slate-300',
 };
 
 interface StatusBadgeProps {

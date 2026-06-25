@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react';
 import type { TaskWorkflowStep } from '@cpwork/shared';
-import { taskMuted } from './taskStyles';
+import { taskAccent, taskMuted, taskSurface } from './taskStyles';
 
 export type WorkflowTab =
   | 'requirements'
@@ -54,7 +54,7 @@ export function WorkflowTabs({
 
   return (
     <nav
-      className="overflow-x-auto rounded-lg border border-slate-700/60 bg-[#0f0f1a] px-2 py-2"
+      className={`overflow-x-auto ${taskSurface} px-2 py-2`}
       aria-label="Workflow progress"
     >
       <ol className="flex min-w-max items-center gap-0.5">
@@ -73,10 +73,10 @@ export function WorkflowTabs({
                 className={[
                   'flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors sm:px-3',
                   isActive
-                    ? 'bg-brand-600/20 text-brand-300'
+                    ? 'bg-brand-600/20 text-brand-700 dark:text-brand-300'
                     : canNavigate
-                      ? 'text-slate-300 hover:bg-slate-800'
-                      : 'cursor-default text-slate-600',
+                      ? 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-neutral-900'
+                      : 'cursor-default text-slate-400 dark:text-slate-600',
                 ].join(' ')}
               >
                 <span
@@ -86,7 +86,7 @@ export function WorkflowTabs({
                       ? 'bg-brand-600 text-white'
                       : isCurrent
                         ? 'bg-brand-600 text-white ring-2 ring-brand-500/40'
-                        : 'border border-slate-600 bg-[#1a1a2e] text-slate-500',
+                        : 'border border-slate-300 bg-white text-slate-400 dark:border-neutral-700 dark:bg-[#111111] dark:text-slate-500',
                   ].join(' ')}
                 >
                   {isComplete ? <Check className="h-3 w-3" /> : i + 1}
@@ -94,14 +94,14 @@ export function WorkflowTabs({
                 <span className="hidden text-xs font-medium sm:inline">{t.label}</span>
                 <span className="text-xs font-medium sm:hidden">{t.short}</span>
                 {isCurrent && (
-                  <span className="hidden text-[10px] text-brand-400/80 md:inline">· active</span>
+                  <span className={`hidden text-[10px] ${taskAccent} opacity-80 md:inline`}>· active</span>
                 )}
               </button>
               {i < TABS.length - 1 && (
                 <div
                   className={[
                     'mx-0.5 h-px w-3 sm:w-5',
-                    isComplete ? 'bg-brand-600' : 'bg-slate-700',
+                    isComplete ? 'bg-brand-600' : 'bg-slate-300 dark:bg-neutral-800',
                   ].join(' ')}
                 />
               )}

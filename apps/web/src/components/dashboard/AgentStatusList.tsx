@@ -14,7 +14,7 @@ export function AgentStatusList({ agents }: AgentStatusListProps) {
         {agents.map((a) => (
           <li
             key={a.id}
-            className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-900"
+            className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-neutral-800 dark:bg-black"
           >
             <span className="text-sm text-slate-800 dark:text-slate-200">{a.label}</span>
             <StatusBadge

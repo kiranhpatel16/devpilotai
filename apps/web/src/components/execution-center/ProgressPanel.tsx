@@ -51,17 +51,17 @@ export function ProgressPanel({ detail, preStart }: ProgressPanelProps) {
             </PieChart>
           </ResponsiveContainer>
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-xl font-bold text-white">{pct}%</span>
+            <span className={`text-xl font-bold ${taskTitle}`}>{pct}%</span>
           </div>
         </div>
         <div className="flex-1 space-y-2 text-sm">
           <div className="flex justify-between">
             <span className={taskMuted}>Estimated</span>
-            <span className={`font-medium text-white`}>~2h</span>
+            <span className={`font-medium ${taskTitle}`}>~2h</span>
           </div>
           <div className="flex justify-between">
             <span className={taskMuted}>Elapsed</span>
-            <span className={`font-medium text-white`}>{elapsed}m</span>
+            <span className={`font-medium ${taskTitle}`}>{elapsed}m</span>
           </div>
           <div className="flex justify-between">
             <span className={taskMuted}>Provider</span>

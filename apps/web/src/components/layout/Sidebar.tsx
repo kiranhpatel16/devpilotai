@@ -11,7 +11,7 @@ function navClass({ isActive }: { isActive: boolean }) {
     'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
     isActive
       ? 'bg-indigo-600/20 text-indigo-300'
-      : 'text-slate-300 hover:bg-slate-700/50 hover:text-white',
+      : 'text-slate-300 hover:bg-neutral-900/50 hover:text-white',
   ].join(' ');
 }
 
@@ -36,14 +36,14 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
 
   const content = (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-slate-700 px-4 py-4">
+      <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-4">
         <div>
           <span className="text-lg font-bold text-white">DevPilot AI</span>
           <p className="text-xs text-slate-400">Engineering Platform</p>
         </div>
         <button
           type="button"
-          className="rounded-lg p-1.5 text-slate-300 transition-colors hover:bg-slate-700/50 hover:text-white lg:hidden"
+          className="rounded-lg p-1.5 text-slate-300 transition-colors hover:bg-neutral-900/50 hover:text-white lg:hidden"
           onClick={onClose}
           aria-label="Close menu"
         >
@@ -76,7 +76,7 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
           </div>
         ))}
 
-        <div className="border-t border-slate-700 pt-4">
+        <div className="border-t border-neutral-800 pt-4">
           <div className="space-y-0.5">
             {footerItems.map((item) => (
               <NavLink
@@ -94,7 +94,7 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
         </div>
       </nav>
 
-      <div className="border-t border-slate-700 p-4">
+      <div className="border-t border-neutral-800 p-4">
         <div className="mb-1 flex justify-between text-xs text-slate-400">
           <span>AI Credits</span>
           <span>
@@ -103,7 +103,7 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
               : '—'}
           </span>
         </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-slate-700">
+        <div className="h-1.5 overflow-hidden rounded-full bg-neutral-800">
           <div
             className="h-full rounded-full bg-indigo-500 transition-all"
             style={{ width: `${credits?.percent ?? 0}%` }}
@@ -115,18 +115,18 @@ export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
 
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-slate-800 dark:bg-slate-900 lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col bg-slate-800 dark:bg-black lg:flex">
         {content}
       </aside>
 
       {mobileOpen && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-slate-900/60 lg:hidden"
+            className="fixed inset-0 z-40 bg-black/60 lg:hidden"
             onClick={onClose}
             aria-hidden
           />
-          <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800 dark:bg-slate-900 lg:hidden">
+          <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800 dark:bg-black lg:hidden">
             {content}
           </aside>
         </>

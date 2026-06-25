@@ -45,7 +45,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white/95 px-4 backdrop-blur dark:border-slate-700 dark:bg-slate-800/95 lg:pl-6">
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200 bg-white/95 px-4 backdrop-blur dark:border-neutral-800 dark:bg-black/95 lg:pl-6">
       <button
         type="button"
         className="btn-ghost rounded-xl p-2 lg:hidden"
@@ -58,7 +58,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       <div className="relative flex items-center gap-2">
         <button
           type="button"
-          className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:border-brand-300 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+          className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:border-brand-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-slate-200"
           onClick={() => setProjectMenuOpen((o) => !o)}
         >
           <span className="font-medium">{activeProject?.name ?? 'Select workspace'}</span>
@@ -85,13 +85,13 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               onClick={() => setProjectMenuOpen(false)}
               aria-hidden
             />
-            <div className="absolute left-0 top-full z-50 mt-1 min-w-[220px] rounded-xl border border-slate-200 bg-white py-1 shadow-card dark:border-slate-700 dark:bg-slate-800 dark:shadow-card-dark">
+            <div className="absolute left-0 top-full z-50 mt-1 min-w-[220px] rounded-xl border border-slate-200 bg-white py-1 shadow-card dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-card-dark">
               {projects.map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   className={[
-                    'flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700',
+                    'flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-neutral-800',
                     p.id === activeProject?.id ? 'bg-brand-50 dark:bg-brand-900/30' : '',
                   ].join(' ')}
                   onClick={() => selectProject(p)}
@@ -108,7 +108,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       </div>
 
       {branchName && (
-        <div className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs md:flex dark:border-slate-700 dark:bg-slate-900">
+        <div className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs md:flex dark:border-neutral-800 dark:bg-neutral-900">
           <GitBranch className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400" />
           <span className="max-w-[200px] truncate font-mono text-slate-700 dark:text-slate-300">
             {branchName}
@@ -122,7 +122,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
           <input
             type="search"
             placeholder="Search tasks, files, knowledge…"
-            className="input w-full bg-slate-50 pl-9 text-sm dark:bg-slate-900"
+            className="input w-full bg-slate-50 pl-9 text-sm dark:bg-neutral-900"
           />
         </div>
       </div>
@@ -148,7 +148,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
           {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
         </button>
 
-        <div className="hidden items-center gap-2 border-l border-slate-200 pl-3 sm:flex dark:border-slate-700">
+        <div className="hidden items-center gap-2 border-l border-slate-200 pl-3 sm:flex dark:border-neutral-800">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-600 text-sm font-medium text-white">
             {session?.user.displayName?.charAt(0) ?? '?'}
           </div>

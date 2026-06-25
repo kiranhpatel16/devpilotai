@@ -55,7 +55,7 @@ export function MyEnvironmentsPage() {
               </span>
             </button>
             {openId === p.id && (
-              <div className="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
+              <div className="border-t border-slate-200 px-4 py-4 dark:border-neutral-800">
                 <ProjectEnvironmentEditor
                   projectId={p.id}
                   projectName={p.name}

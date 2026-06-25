@@ -1,5 +1,5 @@
 import type { AiProviderInfo, Project } from '@cpwork/shared';
-import { taskInput, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskInput, taskMuted, taskPanel, taskPanelHeader, taskStrong, taskTitle } from './taskStyles';
 
 interface BranchSetupPanelProps {
   project: Project;
@@ -36,7 +36,7 @@ export function BranchSetupPanel({
           <label className={`label ${taskMuted}`}>Branch name</label>
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <span className={`text-xs ${taskMuted}`}>
-              from <code className="text-slate-300">{project.git.productionBranch}</code> →
+              from <code className={taskStrong}>{project.git.productionBranch}</code> →
             </span>
             <input
               className={`${taskInput} max-w-md font-mono`}

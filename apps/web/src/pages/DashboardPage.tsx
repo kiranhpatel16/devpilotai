@@ -133,7 +133,7 @@ export function DashboardPage() {
               <li className="text-slate-500">No recent activity.</li>
             )}
             {(s?.activities ?? []).slice(0, 6).map((a) => (
-              <li key={a.id} className="border-b border-slate-200 pb-2 last:border-0 dark:border-slate-700">
+              <li key={a.id} className="border-b border-slate-200 pb-2 last:border-0 dark:border-neutral-800">
                 <p className="text-slate-800 dark:text-slate-200">{a.summary}</p>
                 <p className="text-xs text-slate-500">
                   {a.username ?? 'System'} · {new Date(a.createdAt).toLocaleString()}
@@ -155,11 +155,11 @@ export function DashboardPage() {
               </thead>
               <tbody>
                 {(s?.recentTasks ?? []).map((t) => (
-                  <tr key={t.key} className="border-t border-slate-200 dark:border-slate-700">
+                  <tr key={t.key} className="border-t border-slate-200 dark:border-neutral-800">
                     <td className="py-2 pr-4 font-mono text-brand-600 dark:text-brand-400">{t.key}</td>
                     <td className="py-2 pr-4 text-slate-700 dark:text-slate-300">{t.summary}</td>
                     <td className="py-2">
-                      <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">{t.status}</span>
+                      <span className="badge bg-slate-100 text-slate-600 dark:bg-neutral-800 dark:text-slate-300">{t.status}</span>
                     </td>
                   </tr>
                 ))}

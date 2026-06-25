@@ -7,6 +7,7 @@ import { previousStep } from '../task-workflow/constants';
 import { FilesChangedPanel } from './FilesChangedPanel';
 import { RecentCommitsTable } from './RecentCommitsTable';
 import {
+  taskAccent,
   taskBtnGhost,
   taskBtnPrimary,
   taskBtnSecondary,
@@ -14,6 +15,8 @@ import {
   taskMuted,
   taskPanel,
   taskPanelHeader,
+  taskStickyFooter,
+  taskStrong,
   taskTitle,
 } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
@@ -128,7 +131,7 @@ export function PrStepPanel({
               href={git.prUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-block text-sm font-medium text-brand-400 hover:underline"
+              className={`inline-block text-sm font-medium ${taskAccent} hover:underline`}
             >
               View pull request ↗
             </a>
@@ -152,13 +155,13 @@ export function PrStepPanel({
           ) && (
             <p className={`mt-1 text-xs ${taskMuted}`}>
               Configure Git/PR credentials in project settings, or open a PR manually for branch{' '}
-              <code className="text-slate-300">{run.branchName}</code>.
+              <code className={taskStrong}>{run.branchName}</code>.
             </p>
           )}
         </div>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/60 bg-[#12121f]/95 px-1 py-3 backdrop-blur-sm">
+      <div className={taskStickyFooter}>
         {prev ? (
           <button type="button" className={taskBtnGhost} onClick={() => onNavigate(prev)}>
             ← Back

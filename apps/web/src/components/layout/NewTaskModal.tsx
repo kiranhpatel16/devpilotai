@@ -40,7 +40,7 @@ export function NewTaskModal({ open, onClose, defaultProjectId }: NewTaskModalPr
   function handleContinue() {
     if (!selectedProject) return;
     if (taskType === 'custom' || taskType === 'bug') {
-      navigate(`/workspaces/${selectedProject}/tasks/_custom?type=custom`);
+      navigate(`/workspaces/${selectedProject}?tab=custom&create=1`);
     } else if (taskType === 'incident') {
       navigate('/tasks/incidents');
     } else {

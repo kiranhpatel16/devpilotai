@@ -17,7 +17,7 @@ import { ReviewStepPanel } from './ReviewStepPanel';
 import { TaskContextRail } from './TaskContextRail';
 import { RequirementsStepPanel } from './RequirementsStepPanel';
 import { isEarlyWorkflowStep } from '../../lib/workflowAdvance';
-import { taskMuted } from './taskStyles';
+import { taskMuted, taskStrong } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
 
 interface StepContentRouterProps {
@@ -44,24 +44,25 @@ function WorkflowActions({
   providers,
   onChange,
   onNavigate,
+  onWorkflowTabChange,
 }: {
   detail: RunDetail;
   project: Project;
   providers: AiProviderInfo[];
   onChange: (d: RunDetail) => void;
   onNavigate: (step: TaskWorkflowStep) => void;
+  onWorkflowTabChange?: (tab: WorkflowTab) => void;
 }) {
   return (
-    <div className="task-workflow-dark">
-      <WorkflowStepContent
-        detail={detail}
-        project={project}
-        providers={providers}
-        onChange={onChange}
-        onNavigate={onNavigate}
-        hideSetupSteps
-      />
-    </div>
+    <WorkflowStepContent
+      detail={detail}
+      project={project}
+      providers={providers}
+      onChange={onChange}
+      onNavigate={onNavigate}
+      onWorkflowTabChange={onWorkflowTabChange}
+      hideSetupSteps
+    />
   );
 }
 
@@ -125,11 +126,12 @@ export function StepContentRouter({
                   providers={providers}
                   onChange={onChange}
                   onNavigate={onNavigate}
+                  onWorkflowTabChange={onWorkflowTabChange}
                 />
               ) : detail && wf && isEarlyWorkflowStep(wf.currentStep) ? (
                 <p className={`text-sm ${taskMuted}`}>
-                  Go to <strong className="text-slate-300">Requirements</strong>, configure branch
-                  &amp; AI, then click <strong className="text-slate-300">Generate plan</strong>.
+                  Go to <strong className={taskStrong}>Requirements</strong>, configure branch
+                  &amp; AI, then click <strong className={taskStrong}>Generate plan</strong>.
                 </p>
               ) : (
                 <p className={`text-sm ${taskMuted}`}>Start the task to generate a plan.</p>
@@ -158,6 +160,7 @@ export function StepContentRouter({
                   providers={providers}
                   onChange={onChange}
                   onNavigate={onNavigate}
+                  onWorkflowTabChange={onWorkflowTabChange}
                 />
               ) : (
                 <p className={`text-sm ${taskMuted}`}>No active code generation.</p>

@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import type { RunDetail, TaskWorkflowStep } from '@cpwork/shared';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
+import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { DiffView } from '../DiffView';
 import { previousStep } from '../task-workflow/constants';
 import {
@@ -10,9 +11,14 @@ import {
   taskBtnGhost,
   taskBtnPrimary,
   taskBtnSecondary,
+  taskCodeSurface,
   taskInput,
   taskMuted,
   taskPanel,
+  taskRiskItem,
+  taskStickyFooter,
+  taskStrong,
+  taskSurface,
   taskTitle,
 } from './taskStyles';
 
@@ -50,8 +56,10 @@ export function ReviewStepPanel({
   const [metaOpen, setMetaOpen] = useState(false);
   const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
 
-  const diffs = detail.diffs;
+  const diffs = detail.diffs ?? [];
   const files = output?.files ?? [];
+  const manualTestChecklist = output?.manualTestChecklist ?? [];
+  const risks = output?.risks ?? [];
   const activePath = selectedPath ?? files[0]?.path ?? diffs[0]?.path ?? null;
   const selectedDiff = diffs.find((d) => d.path === activePath) ?? diffs[0];
 
@@ -102,9 +110,13 @@ export function ReviewStepPanel({
     onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
   });
 
+  useWorkflowBusy('apply-changes', applyM.isPending, 'Applying changes…');
+  useWorkflowBusy('refine-code', refineM.isPending, 'Updating changes…');
+  useWorkflowBusy('revert-changes', revertM.isPending, 'Reverting changes…');
+  useWorkflowBusy('approve-code-review', approveM.isPending, 'Approving code…');
+
   const prev = previousStep(step);
-  const hasChecklist =
-    (output?.manualTestChecklist.length ?? 0) > 0 || (output?.risks.length ?? 0) > 0;
+  const hasChecklist = manualTestChecklist.length > 0 || risks.length > 0;
 
   if (!output) {
     return (
@@ -117,16 +129,20 @@ export function ReviewStepPanel({
   return (
     <div className="space-y-4">
       {output.summary && (
-        <p className={`rounded-lg border border-slate-700/60 bg-[#0f0f1a] px-4 py-3 text-sm ${taskBody}`}>
+        <p className={`${taskSurface} px-4 py-3 text-sm ${taskBody}`}>
           {output.summary}
         </p>
       )}
 
       {userNotes?.trim() && (
-        <p className={`text-xs ${taskMuted}`}>
-          <span className="text-slate-500">Your notes:</span>{' '}
-          <span className="text-slate-300">{userNotes.trim()}</span>
-        </p>
+        <div className={`${taskSurface} px-4 py-3`}>
+          <h3 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${taskMuted}`}>
+            Your notes
+          </h3>
+          <p className={`text-sm leading-relaxed whitespace-pre-wrap ${taskBody}`}>
+            {userNotes.trim()}
+          </p>
+        </div>
       )}
 
       {detail.error && (
@@ -141,8 +157,8 @@ export function ReviewStepPanel({
         <div
           className={`${taskPanel} grid min-h-[60vh] overflow-hidden lg:grid-cols-[240px_1fr]`}
         >
-          <div className="flex flex-col border-b border-slate-700/60 lg:border-b-0 lg:border-r">
-            <div className="flex items-center justify-between border-b border-slate-700/60 px-3 py-2.5">
+          <div className="flex flex-col border-b border-slate-200 dark:border-neutral-800/60 lg:border-b-0 lg:border-r">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800/60 px-3 py-2.5">
               <h3 className={taskTitle}>Files ({files.length})</h3>
               {!detail.applied && (
                 <button
@@ -205,7 +221,7 @@ export function ReviewStepPanel({
               })}
             </ul>
             {detail.applied && detail.canRevert && (
-              <div className="border-t border-slate-700/60 p-2">
+              <div className="border-t border-slate-200 dark:border-neutral-800/60 p-2">
                 <button
                   type="button"
                   className="w-full text-xs text-red-400 hover:text-red-300"
@@ -219,7 +235,7 @@ export function ReviewStepPanel({
           </div>
 
           <div className="flex min-h-0 flex-col">
-            <div className="flex items-center justify-between border-b border-slate-700/60 px-3 py-2">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800/60 px-3 py-2">
               <span className="truncate font-mono text-xs text-slate-400">{activePath}</span>
               <div className="flex rounded-md border border-slate-600 p-0.5 text-xs">
                 <button
@@ -246,7 +262,7 @@ export function ReviewStepPanel({
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-auto bg-[#0a0a12] p-3">
+            <div className={`flex-1 overflow-auto ${taskCodeSurface} p-3`}>
               {selectedDiff?.error ? (
                 <p className="text-xs text-red-400">{selectedDiff.error}</p>
               ) : selectedDiff ? (
@@ -260,8 +276,8 @@ export function ReviewStepPanel({
       )}
 
       {!detail.applied && output && (
-        <div className="rounded-lg border border-slate-700/60 bg-[#0f0f1a] p-4">
-          <label className={`mb-2 block text-sm font-medium text-white`}>
+        <div className={`${taskSurface} p-4`}>
+          <label className={`mb-2 block text-sm font-medium ${taskTitle}`}>
             Request changes
           </label>
           <p className={`mb-2 text-xs ${taskMuted}`}>
@@ -287,13 +303,13 @@ export function ReviewStepPanel({
       )}
 
       {hasChecklist && (
-        <div className="rounded-lg border border-slate-700/60 bg-[#0f0f1a]">
+        <div className={taskSurface}>
           <button
             type="button"
             onClick={() => setMetaOpen((v) => !v)}
             className="flex w-full items-center justify-between px-4 py-2.5 text-left"
           >
-            <span className="text-sm font-medium text-white">Checklist &amp; risks</span>
+            <span className={`text-sm font-medium ${taskTitle}`}>Checklist &amp; risks</span>
             {metaOpen ? (
               <ChevronDown className={`h-4 w-4 ${taskMuted}`} />
             ) : (
@@ -301,27 +317,30 @@ export function ReviewStepPanel({
             )}
           </button>
           {metaOpen && (
-            <div className="grid gap-4 border-t border-slate-700/60 p-4 md:grid-cols-2">
-              {output.manualTestChecklist.length > 0 && (
+            <div className="grid gap-4 border-t border-slate-200 dark:border-neutral-800/60 p-4 md:grid-cols-2">
+              {manualTestChecklist.length > 0 && (
                 <div>
                   <h4 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${taskMuted}`}>
                     Manual checklist
                   </h4>
-                  <ul className="space-y-1.5 text-xs text-slate-300">
-                    {output.manualTestChecklist.map((c, i) => (
+                  <ul className={`space-y-1.5 text-xs ${taskBody}`}>
+                    {manualTestChecklist.map((c, i) => (
                       <li key={i}>☐ {c}</li>
                     ))}
                   </ul>
                 </div>
               )}
-              {output.risks.length > 0 && (
+              {risks.length > 0 && (
                 <div>
                   <h4 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${taskMuted}`}>
                     Risks
                   </h4>
-                  <ul className="space-y-1.5 text-xs text-amber-300/90">
-                    {output.risks.map((r, i) => (
-                      <li key={i}>⚠ {r}</li>
+                  <ul className="space-y-1.5">
+                    {risks.map((r, i) => (
+                      <li key={i} className={taskRiskItem}>
+                        <span aria-hidden="true">⚠ </span>
+                        {r}
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -337,7 +356,7 @@ export function ReviewStepPanel({
         </div>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/60 bg-[#12121f]/95 px-1 py-3 backdrop-blur-sm">
+      <div className={taskStickyFooter}>
         {prev ? (
           <button type="button" className={taskBtnGhost} onClick={() => onNavigate(prev)}>
             ← Back

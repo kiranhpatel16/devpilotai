@@ -14,6 +14,8 @@ EMPTY_DETAIL = {
     "completedSteps": [],
     "jiraSnapshot": None,
     "customTitle": None,
+    "customTaskKey": None,
+    "customRequirements": None,
     "planMarkdown": None,
     "planFilePath": None,
     "planApprovedAt": None,
@@ -32,7 +34,20 @@ def load_detail(run_id: str) -> dict:
         return dict(EMPTY_DETAIL)
     try:
         stored = json.loads(json_str)
-        return {**EMPTY_DETAIL, **stored}
+        merged = {**EMPTY_DETAIL, **stored}
+        if merged.get("diffs") is None:
+            merged["diffs"] = []
+        if merged.get("completedSteps") is None:
+            merged["completedSteps"] = []
+        if merged.get("output") and isinstance(merged["output"], dict):
+            out = merged["output"]
+            if out.get("files") is None:
+                out["files"] = []
+            if out.get("manualTestChecklist") is None:
+                out["manualTestChecklist"] = []
+            if out.get("risks") is None:
+                out["risks"] = []
+        return merged
     except Exception:
         return dict(EMPTY_DETAIL)
 

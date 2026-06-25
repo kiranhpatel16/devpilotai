@@ -1,5 +1,6 @@
 import type { Activity } from '@cpwork/shared';
 import { Bot, Code2, FileText, GitBranch } from 'lucide-react';
+import { taskBody, taskMuted } from './taskStyles';
 
 export interface ActivityItem {
   id: string;
@@ -64,14 +65,14 @@ export function ActivityFeed({ items }: ActivityFeedProps) {
         return (
           <li key={item.id} className="relative flex gap-3 pb-4 pl-1">
             {i < items.length - 1 && (
-              <span className="absolute left-[11px] top-6 h-full w-px bg-slate-200" />
+              <span className="absolute left-[11px] top-6 h-full w-px bg-slate-200 dark:bg-neutral-800" />
             )}
-            <div className="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-600">
+            <div className="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400">
               <Icon className="h-3 w-3" />
             </div>
             <div className="min-w-0 flex-1 pt-0.5">
-              <p className="text-xs text-slate-300">{item.text}</p>
-              <p className="text-[10px] text-slate-500">{item.time}</p>
+              <p className={`text-xs ${taskBody}`}>{item.text}</p>
+              <p className={`text-[10px] ${taskMuted}`}>{item.time}</p>
             </div>
           </li>
         );

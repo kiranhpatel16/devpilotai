@@ -9,7 +9,7 @@ export function AppShell() {
 
   return (
     <ExecutionProvider>
-      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-black dark:text-slate-100">
         <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
         <div className="lg:pl-64">
           <TopBar onMenuClick={() => setMobileOpen(true)} />

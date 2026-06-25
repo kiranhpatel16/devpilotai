@@ -43,6 +43,110 @@ class _RunsRepo:
         ).fetchall()
         return [_map_row(r) for r in rows]
 
+    def list_workflow_history(
+        self,
+        project_ids: list[str],
+        *,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict], int]:
+        if not project_ids:
+            return [], 0
+
+        effective_ids = [project_id] if project_id else list(project_ids)
+        if project_id and project_id not in project_ids:
+            return [], 0
+
+        placeholders = ",".join("?" * len(effective_ids))
+        conditions = [f"r.project_id IN ({placeholders})", "r.mode = 'workflow'"]
+        params: list = list(effective_ids)
+
+        if user_id:
+            conditions.append("r.user_id = ?")
+            params.append(user_id)
+
+        if approval_status:
+            conditions.append("COALESCE(r.approval_status, 'draft') = ?")
+            params.append(approval_status)
+
+        if search:
+            term = f"%{search.strip()}%"
+            conditions.append(
+                "(r.jira_key LIKE ? OR r.branch_name LIKE ? OR r.summary LIKE ?)"
+            )
+            params.extend([term, term, term])
+
+        where = " AND ".join(conditions)
+        db = get_db()
+
+        count_row = db.execute(
+            f"SELECT COUNT(*) AS n FROM runs r WHERE {where}",
+            params,
+        ).fetchone()
+        total = count_row["n"] if count_row else 0
+
+        offset = max(page - 1, 0) * page_size
+        rows = db.execute(
+            f"""SELECT r.*, u.username, u.display_name, p.name AS project_name
+                FROM runs r
+                JOIN users u ON u.id = r.user_id
+                JOIN projects p ON p.id = r.project_id
+                WHERE {where}
+                ORDER BY r.updated_at DESC
+                LIMIT ? OFFSET ?""",
+            [*params, page_size, offset],
+        ).fetchall()
+
+        return [
+            {
+                **_map_row(r),
+                "username": r["username"],
+                "displayName": r["display_name"],
+                "projectName": r["project_name"],
+            }
+            for r in rows
+        ], total
+
+    def list_distinct_history_users(self, project_ids: list[str]) -> list[dict]:
+        if not project_ids:
+            return []
+        placeholders = ",".join("?" * len(project_ids))
+        rows = get_db().execute(
+            f"""SELECT DISTINCT u.id, u.username, u.display_name
+                FROM runs r
+                JOIN users u ON u.id = r.user_id
+                WHERE r.project_id IN ({placeholders}) AND r.mode = 'workflow'
+                ORDER BY u.display_name ASC, u.username ASC""",
+            project_ids,
+        ).fetchall()
+        return [
+            {
+                "userId": r["id"],
+                "username": r["username"],
+                "displayName": r["display_name"],
+            }
+            for r in rows
+        ]
+
+    def delete_by_id(self, run_id: str) -> bool:
+        db = get_db()
+        cur = db.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        db.commit()
+        return cur.rowcount > 0
+
+    def delete_many(self, run_ids: list[str]) -> int:
+        if not run_ids:
+            return 0
+        placeholders = ",".join("?" * len(run_ids))
+        db = get_db()
+        cur = db.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
+        db.commit()
+        return cur.rowcount
+
     def update_fields(self, run_id: str, fields: dict) -> dict | None:
         allowed = {
             "jiraKey": "jira_key",

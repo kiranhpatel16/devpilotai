@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Activity, RunDetail } from '@cpwork/shared';
 import { api } from '../../lib/api';
+import { isAgentStepAwaitingRun } from '../../lib/workflowAdvance';
 import { AGENT_DEFINITIONS } from '../layout/navConfig';
-import { taskMuted } from './taskStyles';
+import { taskMuted, taskSurface, taskTitle } from './taskStyles';
 
 interface AgentStatusBannerProps {
   detail: RunDetail | null;
@@ -67,17 +68,29 @@ export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerP
     message = 'Awaiting your review';
   }
 
+  const awaitingRun = isAgentStepAwaitingRun(activeDetail);
+  if (awaitingRun) {
+    message = 'Ready — click Run agent to start';
+  }
+
   const agent = AGENT_DEFINITIONS.find((a) => a.id === agentId);
   const lastActivity = activitiesQ.data?.[0];
+  const showPulse = polling && !awaitingRun;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/60 bg-[#0f0f1a] px-3 py-2">
+    <div className={`flex flex-wrap items-center justify-between gap-2 ${taskSurface} px-3 py-2`}>
       <div className="flex items-center gap-2">
         <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-400 opacity-60" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-500" />
+          {showPulse ? (
+            <>
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-500" />
+            </>
+          ) : (
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-slate-400 dark:bg-neutral-500" />
+          )}
         </span>
-        <span className="text-sm font-medium text-white">{agent?.label ?? 'Agent'}</span>
+        <span className={`text-sm font-medium ${taskTitle}`}>{agent?.label ?? 'Agent'}</span>
         <span className={`text-xs ${taskMuted}`}>{message}</span>
       </div>
       {lastActivity && (

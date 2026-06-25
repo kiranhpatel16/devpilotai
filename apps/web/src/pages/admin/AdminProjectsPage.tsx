@@ -67,7 +67,7 @@ export function AdminProjectsPage() {
 
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          <thead className="bg-slate-50 text-left text-slate-500 dark:bg-neutral-900 dark:text-slate-400">
             <tr>
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Slug</th>
@@ -172,7 +172,7 @@ function ProjectModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-2xl">
         <div className="card max-h-[90vh] overflow-y-auto">
-          <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+          <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-black">
             <h2 className="font-medium">{project ? 'Edit project' : 'Add project'}</h2>
             <button className="btn-ghost" type="button" onClick={onClose}>
               ✕

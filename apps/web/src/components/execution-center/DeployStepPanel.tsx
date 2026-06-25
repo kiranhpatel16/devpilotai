@@ -5,6 +5,7 @@ import { CheckCircle2, Loader2 } from 'lucide-react';
 import { api, getApiErrorMessage } from '../../lib/api';
 import { previousStep } from '../task-workflow/constants';
 import {
+  taskAccent,
   taskBody,
   taskBtnGhost,
   taskBtnPrimary,
@@ -12,6 +13,9 @@ import {
   taskMuted,
   taskPanel,
   taskPanelHeader,
+  taskStickyFooter,
+  taskStrong,
+  taskSurface,
   taskTitle,
 } from './taskStyles';
 
@@ -78,12 +82,12 @@ export function DeployStepPanel({ detail, onChange, onNavigate }: DeployStepPane
           <div className={`mt-3 space-y-1 text-sm ${taskBody}`}>
             {run.jiraKey && (
               <p>
-                Jira: <span className="font-mono text-brand-400">{run.jiraKey}</span>
+                Jira: <span className={`font-mono ${taskAccent}`}>{run.jiraKey}</span>
               </p>
             )}
             {run.branchName && (
               <p>
-                Branch: <span className="font-mono text-slate-300">{run.branchName}</span>
+                Branch: <span className={`font-mono ${taskStrong}`}>{run.branchName}</span>
               </p>
             )}
             {detail.git?.prUrl && (
@@ -91,7 +95,7 @@ export function DeployStepPanel({ detail, onChange, onNavigate }: DeployStepPane
                 href={detail.git.prUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-block text-brand-400 hover:underline"
+                className={`inline-block ${taskAccent} hover:underline`}
               >
                 View pull request ↗
               </a>
@@ -104,7 +108,7 @@ export function DeployStepPanel({ detail, onChange, onNavigate }: DeployStepPane
                 Jira comment posted
               </p>
               <div
-                className={`max-h-48 overflow-y-auto rounded-lg border border-slate-700/60 bg-[#0f0f1a] p-3 text-sm ${taskBody} whitespace-pre-wrap`}
+                className={`max-h-48 overflow-y-auto ${taskSurface} p-3 text-sm ${taskBody} whitespace-pre-wrap`}
               >
                 {wf.jiraCommentText}
               </div>
@@ -129,7 +133,7 @@ export function DeployStepPanel({ detail, onChange, onNavigate }: DeployStepPane
         <div className="space-y-4 p-4">
           <p className={`text-sm ${taskMuted}`}>
             Review and edit the comment, then post it to{' '}
-            <span className="font-mono text-brand-400">{run.jiraKey ?? 'Jira'}</span>.
+            <span className={`font-mono ${taskAccent}`}>{run.jiraKey ?? 'Jira'}</span>.
           </p>
 
           {wf.jiraCommentPostedAt ? (
@@ -163,7 +167,7 @@ export function DeployStepPanel({ detail, onChange, onNavigate }: DeployStepPane
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/60 bg-[#12121f]/95 px-1 py-3 backdrop-blur-sm">
+      <div className={taskStickyFooter}>
         {prev ? (
           <button type="button" className={taskBtnGhost} onClick={() => onNavigate(prev)}>
             ← Back

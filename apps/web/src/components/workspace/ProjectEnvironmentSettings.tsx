@@ -356,7 +356,7 @@ export function ProjectEnvironmentEditor({
       )}
 
       {health && (
-        <div className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+        <div className="rounded-md border border-slate-200 p-3 dark:border-neutral-800">
           <p className="mb-2 text-sm font-medium text-slate-900 dark:text-white">
             Health check{' '}
             <span

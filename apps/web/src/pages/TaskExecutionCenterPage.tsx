@@ -13,6 +13,7 @@ import type {
 } from '@cpwork/shared';
 import { api, getApiErrorCode, getApiErrorMessage } from '../lib/api';
 import { useExecution } from '../context/ExecutionContext';
+import { WorkflowBusyProvider, useWorkflowBusy } from '../context/WorkflowBusyContext';
 import { TaskHistoryGrid } from '../components/task-workflow/TaskHistoryGrid';
 import { TaskActionBar } from '../components/execution-center/TaskActionBar';
 import { AgentStatusBanner } from '../components/execution-center/AgentStatusBanner';
@@ -23,7 +24,9 @@ import {
   getTabForStep,
   type WorkflowTab,
 } from '../components/execution-center/WorkflowTabs';
-import { taskCard, taskMuted } from '../components/execution-center/taskStyles';
+import { isAgentStepAwaitingRun } from '../lib/workflowAdvance';
+import { customTaskPath } from '../lib/customTaskRoutes';
+import { taskCard, taskHeading, taskMuted } from '../components/execution-center/taskStyles';
 
 interface ProjectDetail {
   project: Project;
@@ -36,6 +39,14 @@ type WorkflowRestoreLocationState = {
 };
 
 export function TaskExecutionCenterPage() {
+  return (
+    <WorkflowBusyProvider>
+      <TaskExecutionCenterPageInner />
+    </WorkflowBusyProvider>
+  );
+}
+
+function TaskExecutionCenterPageInner() {
   const { projectId = '', taskKey: taskKeyParam = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -46,6 +57,7 @@ export function TaskExecutionCenterPage() {
   const decodedTaskKey = taskKeyParam ? decodeURIComponent(taskKeyParam) : null;
   const isCustomRoute =
     decodedTaskKey === '_custom' || searchParams.get('type') === 'custom';
+  const runIdParam = searchParams.get('runId');
 
   const [selectedKey, setSelectedKey] = useState<string | null>(
     isCustomRoute ? null : decodedTaskKey,
@@ -114,6 +126,13 @@ export function TaskExecutionCenterPage() {
     enabled: !!projectId && showHistory,
   });
 
+  const restoreQ = useQuery({
+    queryKey: ['workflow-run', runIdParam],
+    queryFn: async () =>
+      (await api.get<{ detail: RunDetail }>(`/workflow/runs/${runIdParam}`)).data.detail,
+    enabled: !!projectId && isCustomRoute && !!runIdParam && !detail,
+  });
+
   const startWorkflowM = useMutation({
     mutationFn: async (input: { jiraKey?: string | null; customTitle?: string }) =>
       (
@@ -128,6 +147,9 @@ export function TaskExecutionCenterPage() {
       setDetail(d);
       setShowHistory(false);
       if (d.workflow?.currentStep) setWorkflowTab(getTabForStep(d.workflow.currentStep));
+      if (!d.run.jiraKey) {
+        navigate(customTaskPath(projectId, d.run.id), { replace: true });
+      }
     },
     onError: (err) =>
       setError({ message: getApiErrorMessage(err), code: getApiErrorCode(err) }),
@@ -207,7 +229,7 @@ export function TaskExecutionCenterPage() {
   }, [detail, projectQ.data, setBranchName, setProjectName]);
 
   function startCustomTask() {
-    navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`);
+    navigate(`/workspaces/${projectId}?tab=custom&create=1`);
   }
 
   function reset() {
@@ -243,7 +265,7 @@ export function TaskExecutionCenterPage() {
     if (restored.run.jiraKey) {
       navigate(`/workspaces/${projectId}/tasks/${encodeURIComponent(restored.run.jiraKey)}`);
     } else {
-      navigate(`/workspaces/${projectId}/tasks/_custom?type=custom`);
+      navigate(customTaskPath(projectId, restored.run.id));
     }
     queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
   }
@@ -253,14 +275,43 @@ export function TaskExecutionCenterPage() {
     if (!restored || restored.run.projectId !== projectId) return;
 
     applyRestoredDetail(restored);
-    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+    navigate(customTaskPath(projectId, restored.run.id), { replace: true, state: null });
     queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
     // Only apply navigation state once on entry from Task History (or similar).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!restoreQ.data || detail) return;
+    if (restoreQ.data.run.projectId !== projectId) return;
+    applyRestoredDetail(restoreQ.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreQ.data, detail, projectId]);
+
   const providers = providersQ.data ?? [];
   const noProviders = providersQ.isSuccess && providers.length === 0;
+
+  const wf = detail?.workflow;
+  const polling =
+    !!detail &&
+    !!wf &&
+    detail.run.status !== 'paused' &&
+    detail.run.status !== 'cancelled' &&
+    !isAgentStepAwaitingRun(detail) &&
+    (['agent', 'deploy', 'branch'].includes(wf.currentStep) ||
+      detail.run.status === 'deploying' ||
+      !!detail.deploy?.running);
+
+  useWorkflowBusy('workflow-poll', polling, 'Agent working…');
+  useWorkflowBusy('start-task', startWorkflowM.isPending, 'Starting task…');
+  useWorkflowBusy('pause-task', pauseM.isPending, 'Updating task…');
+  useWorkflowBusy('cancel-task', cancelM.isPending, 'Cancelling task…');
+  useWorkflowBusy('navigate-step', navigateStepM.isPending, 'Updating step…');
+  useWorkflowBusy(
+    'deploy-running',
+    !!detail?.deploy?.running,
+    'Running local deploy…',
+  );
 
   if (projectQ.isLoading) return <p className={`text-sm ${taskMuted}`}>Loading…</p>;
   if (projectQ.isError || !projectQ.data)
@@ -270,21 +321,44 @@ export function TaskExecutionCenterPage() {
     return <Navigate to={`/workspaces/${projectId}`} replace />;
   }
 
+  if (isCustomRoute && runIdParam && !detail && restoreQ.isLoading) {
+    return <p className={`text-sm ${taskMuted}`}>Loading custom task…</p>;
+  }
+
+  if (isCustomRoute && runIdParam && !detail && restoreQ.isError) {
+    return (
+      <p className="text-sm text-red-400">
+        Could not load custom task.{' '}
+        <Link to={`/workspaces/${projectId}?tab=custom`} className="underline">
+          Back to custom tasks
+        </Link>
+      </p>
+    );
+  }
+
+  if (isCustomRoute && !runIdParam && !detail) {
+    const hasPendingRestore = !!(location.state as WorkflowRestoreLocationState | null)
+      ?.restoredDetail;
+    if (!hasPendingRestore) {
+      return (
+        <p className={`text-sm ${taskMuted}`}>
+          Open a custom task from the{' '}
+          <Link to={`/workspaces/${projectId}?tab=custom`} className="underline">
+            workspace custom tasks
+          </Link>{' '}
+          list.
+        </p>
+      );
+    }
+  }
+
   const { project, myEnvironment } = projectQ.data;
   const board = boardQ.data;
   const hasTask = !!selectedKey || custom;
-  const wf = detail?.workflow;
   const boardTask = board?.groups.flatMap((g) => g.tasks).find((t) => t.key === selectedKey);
   const taskSummary = boardTask?.summary;
   const jiraSnapshot = (wf?.jiraSnapshot as JiraIssueDetail | null) ?? issueQ.data ?? boardTask ?? null;
   const preStart = hasTask && !detail;
-
-  const polling =
-    !!detail &&
-    !!wf &&
-    detail.run.status !== 'paused' &&
-    detail.run.status !== 'cancelled' &&
-    ['agent', 'deploy', 'branch'].includes(wf.currentStep);
 
   const showAgentBanner =
     !!detail &&
@@ -297,7 +371,7 @@ export function TaskExecutionCenterPage() {
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Workflow history</h2>
+          <h2 className={`text-lg font-semibold ${taskHeading}`}>Workflow history</h2>
           <button type="button" className="btn-secondary" onClick={() => setShowHistory(false)}>
             ← Back to task
           </button>
@@ -380,7 +454,7 @@ export function TaskExecutionCenterPage() {
         </div>
 
         {!myEnvironment && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
             Local environment not configured.{' '}
             <Link to="/settings/environments" className="font-medium underline">
               Set it up
@@ -390,13 +464,13 @@ export function TaskExecutionCenterPage() {
         )}
 
         {noProviders && (
-          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+          <p className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
             No AI provider enabled. Configure in Settings → AI Providers.
           </p>
         )}
 
         {error && (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          <div className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
             <p className="font-medium">{error.message}</p>
             {(error.code === 'needs_local_setup' || error.code === 'path_not_found') && (
               <Link to="/settings/environments" className="mt-1 inline-block underline">

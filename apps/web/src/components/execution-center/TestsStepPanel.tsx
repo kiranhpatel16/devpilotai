@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import type { Activity, Project, RunDetail, TaskWorkflowStep } from '@cpwork/shared';
 import {
   DEPLOY_PROFILE_LABELS,
@@ -7,19 +6,25 @@ import {
   resolveDeployProfile,
 } from '@cpwork/shared';
 import { ArrowRight, CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
-import { api, getApiErrorMessage } from '../../lib/api';
 import { useDeployPipeline } from '../../hooks/useDeployPipeline';
+import { useTestPipeline } from '../../hooks/useTestPipeline';
+import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { DeployProgressModal } from '../task-workflow/DeployProgressModal';
 import { previousStep } from '../task-workflow/constants';
 import { ActivityFeed, mapActivities } from './ActivityFeed';
 import {
+  taskAccent,
   taskBody,
   taskBtnGhost,
   taskBtnPrimary,
   taskBtnSecondary,
+  taskCodeSurface,
   taskMuted,
   taskPanel,
   taskPanelHeader,
+  taskStickyFooter,
+  taskStrong,
+  taskSurface,
   taskTitle,
 } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
@@ -46,15 +51,29 @@ export function TestsStepPanel({
   const step = wf.currentStep;
   const test = detail.test;
   const [activityOpen, setActivityOpen] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
 
-  const testM = useMutation({
-    mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/runs/${run.id}/test`)).data.detail,
-    onMutate: () => setActionError(null),
-    onSuccess: onChange,
-    onError: (err) => setActionError(getApiErrorMessage(err)),
-  });
+  const {
+    runTestsWithAutoFix,
+    testFixing,
+    pipelineRunning: testPipelineRunning,
+    pipelineError,
+    clearPipelineError,
+  } = useTestPipeline(detail, onChange);
+
+  const autoFixAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    autoFixAttemptedRef.current = false;
+  }, [run.id]);
+
+  useEffect(() => {
+    if (autoFixAttemptedRef.current || !detail.applied || testPipelineRunning) return;
+    if (!test || test.ok) return;
+    const hasFailures = test.steps?.some((s) => !s.ok && !s.skipped);
+    if (!hasFailures) return;
+    autoFixAttemptedRef.current = true;
+    void runTestsWithAutoFix();
+  }, [detail.applied, run.id, test, testPipelineRunning, runTestsWithAutoFix]);
 
   const {
     runDeployPipeline,
@@ -71,6 +90,17 @@ export function TestsStepPanel({
     deployApplying,
     deployPending,
   } = useDeployPipeline(detail, onChange);
+
+  useWorkflowBusy(
+    'tests-pipeline',
+    testPipelineRunning,
+    testFixing ? 'AI agent fixing test failures…' : 'Running tests…',
+  );
+  useWorkflowBusy(
+    'deploy-pipeline',
+    pipelineRunning || deployPending || !!detail.deploy?.running,
+    'Running local deploy…',
+  );
 
   const prev = previousStep(step);
   const deployDone = step === 'commit' || !!detail.deploy?.ok;
@@ -141,7 +171,7 @@ export function TestsStepPanel({
                   </span>
                 </summary>
                 {s.output ? (
-                  <pre className="mx-4 mb-3 max-h-40 overflow-auto rounded-md bg-[#0a0a12] p-2 text-[11px] text-slate-300">
+                  <pre className={`mx-4 mb-3 max-h-40 overflow-auto rounded-md ${taskCodeSurface} p-2 text-[11px] ${taskBody}`}>
                     {s.output}
                   </pre>
                 ) : null}
@@ -155,18 +185,22 @@ export function TestsStepPanel({
         <div className={`${taskPanel} p-4`}>
           <h3 className={`mb-3 ${taskTitle}`}>Run tests</h3>
           <p className={`mb-3 text-xs ${taskMuted}`}>
-            Validate PHP lint, static analysis, and Magento standards on applied changes.
+            Validate PHP lint, static analysis, and Magento standards on applied changes. Failed
+            checks are automatically fixed by the AI agent (up to 3 attempts).
           </p>
           <button
             type="button"
             className={taskBtnSecondary}
-            disabled={!detail.applied || testM.isPending}
-            onClick={() => testM.mutate()}
+            disabled={!detail.applied || testPipelineRunning}
+            onClick={() => {
+              clearPipelineError();
+              void runTestsWithAutoFix();
+            }}
           >
-            {testM.isPending ? (
+            {testPipelineRunning ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Running tests…
+                {testFixing ? 'AI fixing tests…' : 'Running tests…'}
               </>
             ) : (
               'Run tests'
@@ -183,7 +217,7 @@ export function TestsStepPanel({
           <h3 className={`mb-3 ${taskTitle}`}>Local deploy</h3>
           <p className={`mb-3 text-xs ${taskMuted}`}>
             Run the Magento deployment pipeline in the <strong>php-fpm</strong> container for{' '}
-            <span className="text-slate-300">{project.name}</span>.
+            <span className={taskStrong}>{project.name}</span>.
           </p>
           <div className="mb-3 rounded-md border border-brand-500/25 bg-brand-500/5 px-3 py-2">
             <p className="text-xs font-medium text-brand-300">
@@ -229,25 +263,26 @@ export function TestsStepPanel({
       </div>
 
       {activities.length > 0 && (
-        <div className="rounded-lg border border-slate-700/60 bg-[#0f0f1a]">
+        <div className={taskSurface}>
           <button
             type="button"
             onClick={() => setActivityOpen((v) => !v)}
             className="flex w-full items-center justify-between px-4 py-2.5 text-left"
           >
-            <span className="text-sm font-medium text-white">Recent activity</span>
+            <span className={`text-sm font-medium ${taskTitle}`}>Recent activity</span>
             <span className={`text-xs ${taskMuted}`}>{activityOpen ? 'Hide' : 'Show'}</span>
           </button>
           {activityOpen && <ActivityFeed items={mapActivities(activities).slice(0, 5)} />}
         </div>
       )}
 
-      {output && (output.manualTestChecklist.length > 0 || output.risks.length > 0) && (
+      {output &&
+        ((output.manualTestChecklist?.length ?? 0) > 0 || (output.risks?.length ?? 0) > 0) && (
         <p className={`text-xs ${taskMuted}`}>
           Manual checklist and risks are on the{' '}
           <button
             type="button"
-            className="text-brand-400 hover:underline"
+            className={`${taskAccent} hover:underline`}
             onClick={() => onWorkflowTabChange('review')}
           >
             Review
@@ -256,9 +291,9 @@ export function TestsStepPanel({
         </p>
       )}
 
-      {actionError && (
+      {pipelineError && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-          {actionError}
+          {pipelineError}
         </div>
       )}
 
@@ -276,7 +311,7 @@ export function TestsStepPanel({
         onRedeploy={() => void redeployAfterFix()}
       />
 
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 border-t border-slate-700/60 bg-[#12121f]/95 px-1 py-3 backdrop-blur-sm">
+      <div className={taskStickyFooter}>
         {prev ? (
           <button type="button" className={taskBtnGhost} onClick={() => onNavigate(prev)}>
             ← Back

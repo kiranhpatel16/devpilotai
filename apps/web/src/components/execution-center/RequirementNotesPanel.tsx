@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { RunDetail, TaskWorkflowStep } from '@cpwork/shared';
 import { api } from '../../lib/api';
-import { taskInput, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskAccent, taskInput, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
 
 interface RequirementNotesPanelProps {
   runId?: string | null;
@@ -14,8 +14,10 @@ interface RequirementNotesPanelProps {
   readOnly?: boolean;
 }
 
-function storageKey(taskKey: string | null | undefined): string {
-  return `devpilot-notes:${taskKey ?? 'custom'}`;
+function storageKey(taskKey: string | null | undefined, runId?: string | null): string {
+  if (runId) return `devpilot-notes:run:${runId}`;
+  if (taskKey) return `devpilot-notes:${taskKey}`;
+  return 'devpilot-notes:draft';
 }
 
 export function RequirementNotesPanel({
@@ -31,7 +33,7 @@ export function RequirementNotesPanel({
   const [internalNotes, setInternalNotes] = useState(() => {
     if (value) return value;
     try {
-      return localStorage.getItem(storageKey(taskKey)) ?? '';
+      return localStorage.getItem(storageKey(taskKey, runId)) ?? '';
     } catch {
       return '';
     }
@@ -47,7 +49,7 @@ export function RequirementNotesPanel({
     mutationFn: async (text: string) => {
       if (!runId || !currentStep) {
         try {
-          localStorage.setItem(storageKey(taskKey), text);
+          localStorage.setItem(storageKey(taskKey, runId), text);
         } catch {
           /* ignore */
         }
@@ -75,7 +77,7 @@ export function RequirementNotesPanel({
     setDirty(true);
     if (!runId) {
       try {
-        localStorage.setItem(storageKey(taskKey), text);
+        localStorage.setItem(storageKey(taskKey, runId), text);
       } catch {
         /* ignore */
       }
@@ -89,7 +91,7 @@ export function RequirementNotesPanel({
         {!readOnly && dirty && runId && !controlled && (
           <button
             type="button"
-            className="text-xs font-medium text-brand-400 hover:text-brand-300"
+            className={`text-xs font-medium ${taskAccent} hover:text-brand-500 dark:hover:text-brand-300`}
             disabled={saveM.isPending}
             onClick={() => saveM.mutate(notes)}
           >
@@ -119,10 +121,14 @@ export function RequirementNotesPanel({
   );
 }
 
-/** Read notes from localStorage before a workflow run exists. */
-export function loadStoredNotes(taskKey: string | null | undefined): string {
+/** Read notes from localStorage before a workflow run exists (Jira task draft only). */
+export function loadStoredNotes(
+  taskKey: string | null | undefined,
+  runId?: string | null,
+): string {
+  if (runId || !taskKey) return '';
   try {
-    return localStorage.getItem(storageKey(taskKey)) ?? '';
+    return localStorage.getItem(storageKey(taskKey, runId)) ?? '';
   } catch {
     return '';
   }

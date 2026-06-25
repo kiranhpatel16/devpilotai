@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAdminRole, type JiraBoard, type Project } from '@cpwork/shared';
-import { BookOpen, ListTodo, Settings } from 'lucide-react';
+import { BookOpen, History, ListTodo, PenLine, Settings } from 'lucide-react';
 import { api, getApiErrorMessage } from '../lib/api';
 import type { ProjectListItem } from '../lib/projects';
 import { setLastWorkspaceId } from '../lib/lastWorkspace';
@@ -11,8 +11,10 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { TaskBoardPanel } from '../components/workspace/TaskBoardPanel';
 import { WorkspaceSettingsPanel } from '../components/workspace/WorkspaceSettingsPanel';
+import { WorkspaceTaskHistoryPanel } from '../components/workspace/WorkspaceTaskHistoryPanel';
+import { WorkspaceCustomTasksPanel } from '../components/workspace/WorkspaceCustomTasksPanel';
 
-type WorkspaceTab = 'tasks' | 'knowledge' | 'settings';
+type WorkspaceTab = 'tasks' | 'knowledge' | 'history' | 'custom' | 'settings';
 
 interface ProjectDetail {
   project: Project;
@@ -28,7 +30,7 @@ function countByStatus(board: JiraBoard | undefined, matcher: (status: string) =
 
 function WorkspaceStatCard({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="min-w-[7rem] rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
+    <div className="min-w-[7rem] rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900/60">
       <p className="text-xs font-medium text-slate-500">{label}</p>
       <p className="mt-0.5 text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
         {value}
@@ -115,7 +117,9 @@ export function WorkspaceTaskBoardPage() {
   }
 
   function setTab(next: WorkspaceTab) {
-    setSearchParams({ tab: next }, { replace: true });
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', next);
+    setSearchParams(nextParams, { replace: true });
   }
 
   return (
@@ -150,11 +154,13 @@ export function WorkspaceTaskBoardPage() {
         </div>
       </div>
 
-      <div className="flex gap-1 border-b border-slate-200 dark:border-slate-700">
+      <div className="flex gap-1 border-b border-slate-200 dark:border-neutral-800">
         {(
           [
             { id: 'tasks' as const, label: 'Tasks', icon: ListTodo },
             { id: 'knowledge' as const, label: 'Knowledge', icon: BookOpen },
+            { id: 'history' as const, label: 'Task history', icon: History },
+            { id: 'custom' as const, label: 'Custom tasks', icon: PenLine },
             { id: 'settings' as const, label: 'Settings', icon: Settings },
           ] as const
         ).map(({ id, label, icon: Icon }) => (
@@ -204,6 +210,20 @@ export function WorkspaceTaskBoardPage() {
             Open knowledge base →
           </Link>
         </div>
+      )}
+
+      {tab === 'history' && <WorkspaceTaskHistoryPanel projectId={projectId} />}
+
+      {tab === 'custom' && (
+        <WorkspaceCustomTasksPanel
+          projectId={projectId}
+          autoOpenCreate={searchParams.get('create') === '1'}
+          onCreateModalClose={() => {
+            if (searchParams.get('create')) {
+              setSearchParams({ tab: 'custom' }, { replace: true });
+            }
+          }}
+        />
       )}
 
       {tab === 'settings' && (

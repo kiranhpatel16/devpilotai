@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { GitCommitRow } from '@cpwork/shared';
 import { GitCommit } from 'lucide-react';
 import { api } from '../../lib/api';
-import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskTitle } from './taskStyles';
+import { taskAccent, taskBody, taskDivider, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
 
 interface RecentCommitsTableProps {
   runId: string | null;
@@ -55,7 +55,7 @@ export function RecentCommitsTable({ runId, branchName }: RecentCommitsTableProp
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-700/60 bg-[#0f0f1a] text-left text-xs text-slate-500">
+              <tr className={`border-b ${taskDivider} ${taskSurface} text-left text-xs ${taskMuted}`}>
                 <th className="px-4 py-2 font-medium">Hash</th>
                 <th className="px-4 py-2 font-medium">Message</th>
                 <th className="px-4 py-2 font-medium">Author</th>
@@ -65,8 +65,8 @@ export function RecentCommitsTable({ runId, branchName }: RecentCommitsTableProp
             </thead>
             <tbody>
               {commits.map((c) => (
-                <tr key={c.fullHash} className="border-b border-slate-700/40">
-                  <td className="px-4 py-2.5 font-mono text-xs text-brand-400">{c.hash}</td>
+                <tr key={c.fullHash} className={`border-b border-slate-200/80 dark:border-neutral-800/40`}>
+                  <td className={`px-4 py-2.5 font-mono text-xs ${taskAccent}`}>{c.hash}</td>
                   <td className={`max-w-xs truncate px-4 py-2.5 ${taskBody}`}>{c.message}</td>
                   <td className={`px-4 py-2.5 ${taskMuted}`}>{c.author ?? '—'}</td>
                   <td className={`px-4 py-2.5 ${taskMuted}`}>{formatWhen(c.when)}</td>

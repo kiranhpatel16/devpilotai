@@ -15,6 +15,38 @@ Rules:
 - Return the smallest change set that makes deployment succeed. Add PHPUnit tests only when you change PHP classes that require them; skip tests for config/XML/CSS/JS-only fixes.
 - PHP syntax/parse errors (unmatched braces, parse errors): return the ENTIRE corrected file as action=modify with "content" (full file). Do NOT use "edits" for brace/syntax fixes. Do NOT add new methods unless the syntax error requires it — fix the minimal brace/statement issue only."""
 
+TEST_FIX_RULES = """You are fixing Magento code so automated checks pass (PHPUnit unit tests, PHP lint, etc.).
+Rules:
+- Fix ONLY the file(s) implicated by the test/lint failure output or PRIMARY FIX TARGETS list.
+- Do NOT change unrelated files. Read the failure message and stack trace; edit the file(s) it points to.
+- PHPUnit failures: fix the implementation under test OR the test expectations — prefer fixing production code when the test correctly describes required behavior.
+- PHP lint failures: return the FULL corrected file with valid PHP 8.3 syntax.
+- Return the smallest change set that makes all failing checks pass.
+- Include updated PHPUnit tests only when you change test files or add new behavior that needs coverage."""
+
+TEST_FIX_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
+{
+  "summary": "one sentence describing the fix",
+  "files": [
+    {
+      "path": "app/code/Vendor/Module/...",
+      "action": "create | modify | delete",
+      "reason": "why this file changes",
+      "content": "FULL file content — for action=create OR action=modify when fixing PHP syntax errors",
+      "edits": [
+        { "oldString": "exact existing text", "newString": "replacement", "replaceAll": false }
+      ]
+    }
+  ],
+  "manualTestChecklist": ["Re-run tests"],
+  "risks": []
+}
+CRITICAL rules for test fixes:
+- Fix ONLY files named in the test failure. Smallest change that makes checks pass.
+- PHP syntax errors: action=modify with FULL corrected file in "content". Do NOT use "edits".
+- action=modify with "edits": oldString must match the excerpt exactly.
+- Proposed PHP MUST pass php -l."""
+
 DEPLOY_FIX_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
 {
   "summary": "one sentence describing the fix",
@@ -176,7 +208,7 @@ def _validation_retry_block(ctx: dict) -> str:
     if not errors:
         return ""
     mode = ctx.get("mode")
-    if mode == "deploy_fix":
+    if mode in ("deploy_fix", "test_fix"):
         lines = [
             "\n\n*** YOUR PREVIOUS FIX WAS REJECTED ***",
             "Fix these problems in this response:",
@@ -190,7 +222,8 @@ def _validation_retry_block(ctx: dict) -> str:
                 "- The file must pass php -l before it can be applied.",
             ])
         else:
-            lines.append("\nReturn a corrected minimal fix for the deploy error only.")
+            fix_kind = "test" if mode == "test_fix" else "deploy"
+            lines.append(f"\nReturn a corrected minimal fix for the {fix_kind} error only.")
         return "\n".join(lines)
     lines = [
         "\n\n*** YOUR PREVIOUS RESPONSE WAS REJECTED ***",
@@ -254,6 +287,55 @@ def build_prompt(ctx: dict) -> dict:
                 f"Implement the following task with COMPLETE, production-ready code and PHPUnit unit tests. "
                 f"Work like Cursor IDE — write real implementations, not comments describing logic.\n\n"
                 f"{common}{plan_block}{validation_block}"
+            ),
+            "jsonMode": True,
+        }
+
+    if mode == "test_fix":
+        analysis = ctx.get("testAnalysis") or {}
+        test_output = trim_text(ctx.get("testOutput") or "", MAX_DEPLOY_OUTPUT_CHARS)
+        error_files = analysis.get("errorFiles") or []
+        target_block = ""
+        if error_files:
+            target_block = (
+                "\n\nPRIMARY FIX TARGETS (edit these files — named in the test failure):\n"
+                + "\n".join(f"- {path}" for path in error_files)
+            )
+        test_excerpts = ctx.get("testFileExcerpts") or []
+        excerpt_block = ""
+        if test_excerpts:
+            lines = ["\nFiles related to the test failure (read before editing):"]
+            for f in test_excerpts:
+                lines.append(f"\n--- {f['path']} ---\n{f['content']}")
+            excerpt_block = "\n".join(lines)
+        approved_plan = ctx.get("approvedPlanMarkdown")
+        plan_block = ""
+        if approved_plan:
+            plan_block = (
+                f"\n\nApproved implementation plan (context only — do not fix unrelated files):\n\n"
+                f"{trim_text(approved_plan, MAX_PLAN_CHARS)}"
+            )
+        last_fix = ctx.get("lastFailedFix")
+        retry_block = ""
+        if last_fix and last_fix.get("paths"):
+            retry_block = (
+                "\n\n*** PREVIOUS FIX DID NOT WORK — DO NOT REPEAT ***\n"
+                f"Summary attempted: {last_fix.get('summary', '(none)')}\n"
+                f"Files changed: {', '.join(last_fix.get('paths') or [])}\n"
+                "The test failure below is still failing. Propose a DIFFERENT fix."
+            )
+        slim_common = f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}"
+        return {
+            "system": f"{TEST_FIX_RULES}\n\n{TEST_FIX_OUTPUT_CONTRACT}",
+            "user": (
+                "Automated checks failed after applying code changes. Fix the failure with minimal, targeted file changes.\n\n"
+                f"{slim_common}{plan_block}{target_block}{retry_block}\n\n"
+                f"Failure summary: {analysis.get('summary', 'Unknown')}\n"
+                f"Failed checks: {', '.join(analysis.get('failedSteps') or []) or 'see output'}\n\n"
+                f"Test/check output (excerpt):\n{test_output}\n"
+                f"{excerpt_block}\n\n"
+                "Fix the test failure only. Return the smallest change set that makes all checks pass."
+                f"{validation_block}"
             ),
             "jsonMode": True,
         }
