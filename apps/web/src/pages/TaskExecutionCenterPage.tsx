@@ -24,8 +24,9 @@ import {
   getTabForStep,
   type WorkflowTab,
 } from '../components/execution-center/WorkflowTabs';
-import { isAgentStepAwaitingRun } from '../lib/workflowAdvance';
+import { loadStoredNotes } from '../components/execution-center/RequirementNotesPanel';
 import { customTaskPath } from '../lib/customTaskRoutes';
+import { getDeployBusyDetail, shouldPollWorkflow } from '../lib/workflowStatus';
 import { taskCard, taskHeading, taskMuted } from '../components/execution-center/taskStyles';
 
 interface ProjectDetail {
@@ -134,12 +135,17 @@ function TaskExecutionCenterPageInner() {
   });
 
   const startWorkflowM = useMutation({
-    mutationFn: async (input: { jiraKey?: string | null; customTitle?: string }) =>
+    mutationFn: async (input: {
+      jiraKey?: string | null;
+      customTitle?: string;
+      userInstructions?: string | null;
+    }) =>
       (
         await api.post<{ detail: RunDetail }>('/workflow/runs', {
           projectId,
           jiraKey: input.jiraKey ?? null,
           customTitle: input.customTitle ?? null,
+          userInstructions: input.userInstructions ?? null,
         })
       ).data.detail,
     onMutate: () => setError(null),
@@ -237,11 +243,15 @@ function TaskExecutionCenterPageInner() {
   }
 
   function handleStartTask() {
+    const userInstructions = loadStoredNotes(selectedKey).trim() || null;
     if (custom) {
       if (!customTitle.trim()) return;
-      startWorkflowM.mutate({ customTitle: customTitle.trim() });
+      startWorkflowM.mutate({
+        customTitle: customTitle.trim(),
+        userInstructions,
+      });
     } else if (selectedKey) {
-      startWorkflowM.mutate({ jiraKey: selectedKey });
+      startWorkflowM.mutate({ jiraKey: selectedKey, userInstructions });
     }
   }
 
@@ -292,25 +302,18 @@ function TaskExecutionCenterPageInner() {
   const noProviders = providersQ.isSuccess && providers.length === 0;
 
   const wf = detail?.workflow;
-  const polling =
-    !!detail &&
-    !!wf &&
-    detail.run.status !== 'paused' &&
-    detail.run.status !== 'cancelled' &&
-    !isAgentStepAwaitingRun(detail) &&
-    (wf.currentStep === 'agent' ||
-      detail.run.status === 'deploying' ||
-      !!detail.deploy?.running);
+  const polling = shouldPollWorkflow(detail);
+  const deployBusyDetail = getDeployBusyDetail(detail?.deploy ?? null);
 
-  useWorkflowBusy('workflow-poll', polling, 'Agent working…');
-  useWorkflowBusy('start-task', startWorkflowM.isPending, 'Starting task…');
-  useWorkflowBusy('pause-task', pauseM.isPending, 'Updating task…');
-  useWorkflowBusy('cancel-task', cancelM.isPending, 'Cancelling task…');
-  useWorkflowBusy('navigate-step', navigateStepM.isPending, 'Updating step…');
+  useWorkflowBusy('start-task', startWorkflowM.isPending, 'Starting task…', 'Creating workflow run and loading task details from Jira.');
+  useWorkflowBusy('pause-task', pauseM.isPending, 'Updating task…', 'Applying pause or resume to this workflow run.');
+  useWorkflowBusy('cancel-task', cancelM.isPending, 'Cancelling task…', 'Stopping the workflow and clearing the active run.');
+  useWorkflowBusy('navigate-step', navigateStepM.isPending, 'Updating step…', 'Moving to the selected workflow step.');
   useWorkflowBusy(
     'deploy-running',
     !!detail?.deploy?.running,
     'Running local deploy…',
+    deployBusyDetail,
   );
 
   if (projectQ.isLoading) return <p className={`text-sm ${taskMuted}`}>Loading…</p>;

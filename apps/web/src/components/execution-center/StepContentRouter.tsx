@@ -7,11 +7,10 @@ import type {
   TaskWorkflowStep,
 } from '@cpwork/shared';
 import { WorkflowStepContent } from '../task-workflow/WorkflowStepContent';
+import { CodeStepPanel } from './CodeStepPanel';
 import { DeployStepPanel } from './DeployStepPanel';
 import { PrStepPanel } from './PrStepPanel';
 import { TestsStepPanel } from './TestsStepPanel';
-import { FilesChangedPanel } from './FilesChangedPanel';
-import { PlanOverviewPanel } from './PlanOverviewPanel';
 import { ProgressStrip } from './ProgressStrip';
 import { ReviewStepPanel } from './ReviewStepPanel';
 import { TaskContextRail } from './TaskContextRail';
@@ -106,37 +105,31 @@ export function StepContentRouter({
 
     case 'plan':
       return (
-        <div className="space-y-4">
+        <div className="flex min-h-0 flex-col gap-4">
           <ProgressStrip detail={detail} />
           <TaskContextRail
             issue={issue}
             customTitle={customTitle || wf?.customTitle || undefined}
             defaultCollapsed
           />
-          <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
-            <PlanOverviewPanel
-              planMarkdown={wf?.planMarkdown ?? null}
-              currentStep={wf?.currentStep}
-            />
-            <div className="min-w-0">
-              {detail && wf && !isEarlyWorkflowStep(wf.currentStep) ? (
-                <WorkflowActions
-                  detail={detail}
-                  project={project}
-                  providers={providers}
-                  onChange={onChange}
-                  onNavigate={onNavigate}
-                  onWorkflowTabChange={onWorkflowTabChange}
-                />
-              ) : detail && wf && isEarlyWorkflowStep(wf.currentStep) ? (
-                <p className={`text-sm ${taskMuted}`}>
-                  Go to <strong className={taskStrong}>Requirements</strong>, configure branch
-                  &amp; AI, then click <strong className={taskStrong}>Generate plan</strong>.
-                </p>
-              ) : (
-                <p className={`text-sm ${taskMuted}`}>Start the task to generate a plan.</p>
-              )}
-            </div>
+          <div className="min-w-0">
+            {detail && wf && !isEarlyWorkflowStep(wf.currentStep) ? (
+              <WorkflowActions
+                detail={detail}
+                project={project}
+                providers={providers}
+                onChange={onChange}
+                onNavigate={onNavigate}
+                onWorkflowTabChange={onWorkflowTabChange}
+              />
+            ) : detail && wf && isEarlyWorkflowStep(wf.currentStep) ? (
+              <p className={`text-sm ${taskMuted}`}>
+                Go to <strong className={taskStrong}>Requirements</strong>, configure branch &amp; AI,
+                then click <strong className={taskStrong}>Generate plan</strong>.
+              </p>
+            ) : (
+              <p className={`text-sm ${taskMuted}`}>Start the task to generate a plan.</p>
+            )}
           </div>
         </div>
       );
@@ -148,26 +141,21 @@ export function StepContentRouter({
           <TaskContextRail
             issue={issue}
             customTitle={wf?.customTitle || undefined}
-            defaultCollapsed
+            defaultCollapsed={false}
             showAcceptance={false}
           />
-          <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
-            <div className="min-w-0 space-y-4">
-              {detail && wf ? (
-                <WorkflowActions
-                  detail={detail}
-                  project={project}
-                  providers={providers}
-                  onChange={onChange}
-                  onNavigate={onNavigate}
-                  onWorkflowTabChange={onWorkflowTabChange}
-                />
-              ) : (
-                <p className={`text-sm ${taskMuted}`}>No active code generation.</p>
-              )}
-            </div>
-            <FilesChangedPanel detail={detail} compact title="Files Changed" />
-          </div>
+          {detail && wf ? (
+            <CodeStepPanel
+              detail={detail}
+              project={project}
+              providers={providers}
+              onChange={onChange}
+              onNavigate={onNavigate}
+              onWorkflowTabChange={onWorkflowTabChange}
+            />
+          ) : (
+            <p className={`text-sm ${taskMuted}`}>No active code generation.</p>
+          )}
         </div>
       );
 

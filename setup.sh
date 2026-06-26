@@ -82,6 +82,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Playwright Chromium (visual smoke tests on Tests step)
+# ---------------------------------------------------------------------------
+if command -v npx &>/dev/null; then
+  info "Installing Playwright Chromium for browser screenshots (visual smoke tests)..."
+  if npx playwright install chromium; then
+    info "Playwright Chromium installed."
+  else
+    warn "Playwright install failed — run manually later: npx playwright install chromium"
+  fi
+else
+  warn "npx not found — skip Playwright. Install Node.js, then run: npx playwright install chromium"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. .env setup
 # ---------------------------------------------------------------------------
 if [ ! -f ".env" ]; then

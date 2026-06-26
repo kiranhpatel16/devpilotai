@@ -329,12 +329,35 @@ export interface FileDiff {
 
 // ----- Testing -----
 
+export interface TestScreenshot {
+  label: string;
+  /** Page URL that was captured. */
+  url?: string;
+  /** API path, e.g. /runs/{id}/screenshots/homepage.png */
+  path: string;
+  /** Unix timestamp when captured. */
+  capturedAt?: number;
+}
+
+export interface StorefrontError {
+  type?: string;
+  message: string;
+  file?: string;
+  line?: number;
+  details?: string[];
+}
+
 export interface TestStep {
   key: string;
   label: string;
   ok: boolean;
   skipped: boolean;
   output: string;
+  screenshots?: TestScreenshot[];
+  /** Prior screenshots kept across re-runs until checks pass. */
+  screenshotHistory?: TestScreenshot[];
+  /** Parsed Magento exception from storefront HTTP error page. */
+  storefrontError?: StorefrontError;
 }
 
 export interface DeployFailureIssue {

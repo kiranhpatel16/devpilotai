@@ -80,6 +80,12 @@ def resolve_creds_for_test(provider_id: str, overrides: dict | None = None) -> d
     return _build_resolved_creds(provider_id, entry, setting, overrides=overrides)
 
 
+def _has_stored_key(setting: dict | None) -> bool:
+    if not setting or not setting.get("apiKeyEnc"):
+        return False
+    return decrypt_secret(setting["apiKeyEnc"]) is not None
+
+
 def _build_resolved_creds(
     provider_id: str,
     entry: dict,
@@ -92,7 +98,16 @@ def _build_resolved_creds(
     api_key = overrides.get("apiKey")
     if not api_key:
         enc = setting["apiKeyEnc"] if setting else None
-        api_key = decrypt_secret(enc) if enc else None
+        if enc:
+            api_key = decrypt_secret(enc)
+            if not api_key:
+                raise HttpError.bad_request(
+                    f'Provider "{provider_id}" has a stored API key that could not be read. '
+                    "Re-enter the key and click Save (encryption key may have changed).",
+                    "provider_key_decrypt_failed",
+                )
+        else:
+            api_key = None
     if not api_key:
         raise HttpError.bad_request(
             f'Provider "{provider_id}" has no valid API key. Paste a key and Save, or enter one to test first.',
@@ -178,7 +193,7 @@ def list_provider_info() -> list[dict]:
             "id": pid,
             "label": entry["label"],
             "enabled": bool(setting and setting["enabled"]) and available,
-            "configured": bool(setting and setting["apiKeyEnc"]) and available,
+            "configured": _has_stored_key(setting) and available,
             "defaultModel": (setting["defaultModel"] if setting else None) or entry["defaultModel"],
             "baseUrl": setting["baseUrl"] if setting else None,
             "defaultBaseUrl": entry.get("defaultBaseUrl"),

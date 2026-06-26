@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+import os
 import re as re_module
 from lib.errors import HttpError
 from middleware.auth import get_auth, is_admin_role, can_write_on_project
@@ -31,6 +33,7 @@ from services.agent_output_validator import (
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
 from services.ai_providers.registry import enabled_provider_info
+from services.visual_test_service import screenshot_dir
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -110,6 +113,19 @@ def _pick_provider(requested: str | None) -> str:
     if not enabled:
         raise HttpError.bad_request("No AI provider is enabled. Configure one in Admin → AI Providers.")
     return enabled[0]["id"]
+
+
+def _test_run_kwargs(run_id: str, resolved: dict) -> dict:
+    detail = load_detail(run_id)
+    checklist: list[str] = []
+    output = detail.get("output")
+    if isinstance(output, dict):
+        checklist = output.get("manualTestChecklist") or []
+    return {
+        "frontend_url": resolved.get("frontendUrl"),
+        "run_id": run_id,
+        "manual_test_checklist": checklist,
+    }
 
 
 @router.get("")
@@ -330,7 +346,10 @@ async def apply_run(run_id: str, body: ApplyBody = ApplyBody(), auth: dict = Dep
     git["branch"] = run["branchName"]
 
     test_report = await run_tests(
-        resolved["cwd"], applied_paths, resolved["env"].get("phpBin") or "php",
+        resolved["cwd"],
+        applied_paths,
+        resolved["env"].get("phpBin") or "php",
+        **_test_run_kwargs(run_id, resolved),
     )
 
     patch: dict = {"applied": True, "git": git, "backups": backups, "test": test_report}
@@ -495,7 +514,14 @@ async def test_run(run_id: str, auth: dict = Depends(get_auth)):
     resolved = resolve_environment(run["userId"], run["projectId"])
     detail = load_detail(run_id)
     changed = [f["path"] for f in (detail["output"]["files"] if detail["output"] else [])]
-    report = await run_tests(resolved["cwd"], changed, resolved["env"].get("phpBin") or "php")
+    prior_test = detail.get("test")
+    report = await run_tests(
+        resolved["cwd"],
+        changed,
+        resolved["env"].get("phpBin") or "php",
+        prior_test=prior_test,
+        **_test_run_kwargs(run_id, resolved),
+    )
     patch_detail(run_id, {"test": report})
     run = runs_repo.find_by_id(run_id)
     if run and run.get("mode") == "workflow":
@@ -504,6 +530,17 @@ async def test_run(run_id: str, auth: dict = Depends(get_auth)):
     if report["ok"]:
         runs_repo.update_status(run_id, "commit_ready")
     return {"detail": _assemble_detail(run_id)}
+
+
+@router.get("/{run_id}/screenshots/{filename}")
+async def get_run_screenshot(run_id: str, filename: str, auth: dict = Depends(get_auth)):
+    _load_owned_run(run_id, auth)
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HttpError.bad_request("Invalid filename")
+    path = os.path.join(screenshot_dir(run_id), filename)
+    if not os.path.isfile(path):
+        raise HttpError.not_found("Screenshot not found")
+    return FileResponse(path, media_type="image/png")
 
 
 @router.post("/{run_id}/commit")

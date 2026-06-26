@@ -1,7 +1,18 @@
 import { useState } from 'react';
 import type { RunDetail } from '@cpwork/shared';
 import { DiffView } from '../DiffView';
-import { taskDivider, taskMuted, taskPanel, taskPanelHeader, taskSurface, taskTitle } from './taskStyles';
+import {
+  fileActionBadgeClass,
+  fileListItemClass,
+  filePathTextClass,
+  taskBody,
+  taskDivider,
+  taskMuted,
+  taskPanel,
+  taskPanelHeader,
+  taskSurface,
+  taskTitle,
+} from './taskStyles';
 
 interface FilesChangedPanelProps {
   detail: RunDetail | null;
@@ -10,11 +21,11 @@ interface FilesChangedPanelProps {
   title?: string;
 }
 
-function statusBadge(action: string) {
+function statusBadgeLabel(action: string): string {
   const a = action.toLowerCase();
-  if (a === 'create') return { label: 'A', className: 'bg-emerald-500/20 text-emerald-400' };
-  if (a === 'delete') return { label: 'D', className: 'bg-red-500/20 text-red-400' };
-  return { label: 'M', className: 'bg-brand-600/20 text-brand-300' };
+  if (a === 'create') return 'A';
+  if (a === 'delete') return 'D';
+  return 'M';
 }
 
 function EmptyState({ title, message }: { title: string; message: string }) {
@@ -39,7 +50,8 @@ export function FilesChangedPanel({
 
   const files = detail?.output?.files ?? [];
   const diffs = detail?.diffs ?? [];
-  const selectedDiff = diffs.find((d) => d.path === selectedPath) ?? diffs[0];
+  const activePath = selectedPath ?? files[0]?.path ?? null;
+  const selectedDiff = diffs.find((d) => d.path === activePath) ?? diffs[0];
   const panelTitle = title ?? (showDiff ? 'Code Changes' : 'Files Changed');
 
   if (!detail || files.length === 0) {
@@ -55,29 +67,23 @@ export function FilesChangedPanel({
     return (
       <div className={taskPanel}>
         <header className={taskPanelHeader}>
-          <h3 className={taskTitle}>
-            Files Changed ({files.length})
-          </h3>
+          <h3 className={taskTitle}>Files Changed ({files.length})</h3>
         </header>
         <ul className="max-h-48 overflow-y-auto p-2">
           {files.map((f) => {
-            const badge = statusBadge(f.action ?? 'modify');
+            const isActive = activePath === f.path;
             return (
               <li key={f.path}>
                 <button
                   type="button"
                   onClick={() => setSelectedPath(f.path)}
-                  className={[
-                    'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-xs',
-                    selectedPath === f.path || (!selectedPath && f === files[0])
-                      ? 'bg-brand-600/20 text-brand-700 dark:text-brand-300'
-                      : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-neutral-900',
-                  ].join(' ')}
+                  className={fileListItemClass(isActive)}
+                  aria-current={isActive ? 'true' : undefined}
                 >
-                  <span className={`rounded px-1 text-[10px] font-bold ${badge.className}`}>
-                    {badge.label}
+                  <span className={fileActionBadgeClass(f.action ?? 'modify', isActive)}>
+                    {statusBadgeLabel(f.action ?? 'modify')}
                   </span>
-                  <span className="truncate">{f.path}</span>
+                  <span className={filePathTextClass(isActive)}>{f.path}</span>
                 </button>
               </li>
             );
@@ -92,7 +98,7 @@ export function FilesChangedPanel({
       <header className={`${taskPanelHeader} flex items-center justify-between`}>
         <h3 className={taskTitle}>{panelTitle}</h3>
         {showDiff && (
-          <div className="flex rounded-md border border-slate-600 p-0.5 text-xs">
+          <div className="flex rounded-md border border-slate-300 p-0.5 text-xs dark:border-neutral-600">
             <button
               type="button"
               className={
@@ -118,32 +124,33 @@ export function FilesChangedPanel({
           </div>
         )}
       </header>
-      <div className="grid max-h-80 grid-cols-[minmax(140px,1fr)_2fr] overflow-hidden">
+      <div className="grid max-h-80 grid-cols-[minmax(160px,1fr)_2fr] overflow-hidden">
         <ul className={`overflow-y-auto border-r ${taskDivider} p-2`}>
           {files.map((f) => {
-            const badge = statusBadge(f.action ?? 'modify');
+            const isActive = activePath === f.path;
+            const fileName = f.path.split('/').pop() ?? f.path;
             return (
               <li key={f.path}>
                 <button
                   type="button"
                   onClick={() => setSelectedPath(f.path)}
-                  className={[
-                    'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-xs',
-                    (selectedPath ?? files[0]?.path) === f.path
-                      ? 'bg-brand-600/20 text-brand-700 dark:text-brand-300'
-                      : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-neutral-900',
-                  ].join(' ')}
+                  className={fileListItemClass(isActive)}
+                  title={f.path}
+                  aria-current={isActive ? 'true' : undefined}
                 >
-                  <span className={`rounded px-1 text-[10px] font-bold ${badge.className}`}>
-                    {badge.label}
+                  <span className={fileActionBadgeClass(f.action ?? 'modify', isActive)}>
+                    {statusBadgeLabel(f.action ?? 'modify')}
                   </span>
-                  <span className="truncate">{f.path.split('/').pop()}</span>
+                  <span className={filePathTextClass(isActive)}>{fileName}</span>
                 </button>
               </li>
             );
           })}
         </ul>
         <div className={`overflow-auto ${taskSurface} p-2`}>
+          {activePath && (
+            <p className={`mb-2 truncate font-mono text-[10px] ${taskBody}`}>{activePath}</p>
+          )}
           {selectedDiff && showDiff ? (
             <DiffView diff={selectedDiff} />
           ) : (

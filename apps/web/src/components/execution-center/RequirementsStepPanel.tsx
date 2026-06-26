@@ -64,10 +64,15 @@ export function RequirementsStepPanel({
 
   useEffect(() => {
     if (!detail) {
-      if (taskKey) setNotes(loadStoredNotes(taskKey));
+      setNotes(loadStoredNotes(taskKey));
       return;
     }
-    setNotes(detail.run.userInstructions ?? '');
+    setNotes((prev) => {
+      const fromRun = detail.run.userInstructions?.trim();
+      if (fromRun) return fromRun;
+      if (prev.trim()) return prev;
+      return loadStoredNotes(taskKey, detail.run.id);
+    });
     const p = detail.run.provider ?? providers[0]?.id ?? '';
     setBranchName(detail.run.branchName ?? taskKey ?? '');
     setProvider(p);
@@ -91,7 +96,12 @@ export function RequirementsStepPanel({
     onError: (err) => onError(getApiErrorMessage(err)),
   });
 
-  useWorkflowBusy('generate-plan', generateM.isPending, 'Generating plan…');
+  useWorkflowBusy(
+    'generate-plan',
+    generateM.isPending,
+    'Generating plan…',
+    'Saving branch and AI settings, then the Planner Agent writes your implementation plan. This may take 1–3 minutes.',
+  );
 
   const activeProvider = providers.find((p) => p.id === provider) ?? providers[0];
   const acceptanceCriteria = resolveAcceptanceCriteria(

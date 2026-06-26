@@ -9,6 +9,7 @@ import type {
 } from '@cpwork/shared';
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
+import { getDeployBusyDetail } from '../../lib/workflowStatus';
 import { RunPanel } from '../RunPanel';
 import { previousStep } from './constants';
 import {
@@ -355,18 +356,34 @@ export function WorkflowStepContent({
   });
 
   const step = wf.currentStep;
+  const providerLabel = detail.run.provider ?? 'AI';
+  const modelLabel = detail.run.model ?? providers.find((p) => p.id === detail.run.provider)?.defaultModel ?? 'default model';
+  const deployBusyDetail = getDeployBusyDetail(detail.deploy);
 
-  useWorkflowBusy('save-step', saveStepM.isPending, 'Saving…');
-  useWorkflowBusy('generate-plan', generatePlanM.isPending, 'Generating plan…');
-  useWorkflowBusy('run-agent', runAgentM.isPending, 'Developer agent generating code…');
-  useWorkflowBusy('approve-plan', approvePlanM.isPending, 'Approving plan…');
-  useWorkflowBusy('approve-code', approveCodeM.isPending, 'Approving code…');
+  useWorkflowBusy('save-step', saveStepM.isPending, 'Saving…', 'Updating workflow step settings.');
+  useWorkflowBusy(
+    'generate-plan',
+    generatePlanM.isPending,
+    'Generating plan…',
+    'The Planner Agent is analyzing your task and repository to write an implementation plan.',
+  );
+  useWorkflowBusy(
+    'run-agent',
+    runAgentM.isPending,
+    'Developer agent working…',
+    `Creating branch ${detail.run.branchName || '…'} from ${project.git.productionBranch}, then generating code with ${providerLabel} (${modelLabel}).`,
+  );
+  useWorkflowBusy('approve-plan', approvePlanM.isPending, 'Approving plan…', 'Unlocking the Code step so the Developer Agent can run.');
+  useWorkflowBusy('approve-code', approveCodeM.isPending, 'Approving code…', 'Moving to tests and local deploy.');
   useWorkflowBusy(
     'workflow-deploy',
     pipelineRunning || deployM.isPending || completeDeployM.isPending || deployFixing || deployApplying,
     deployFixing ? 'AI agent fixing deploy error…' : 'Running local deploy…',
+    deployFixing
+      ? 'The Deployment Agent is proposing fixes for the failed Magento deploy step.'
+      : deployBusyDetail ?? 'Running composer, setup:upgrade, cache flush, and related commands.',
   );
-  useWorkflowBusy('post-jira', postJiraM.isPending, 'Posting to Jira…');
+  useWorkflowBusy('post-jira', postJiraM.isPending, 'Posting to Jira…', 'Adding a summary comment to the linked Jira issue.');
 
   const savedPlanQ = useQuery({
     queryKey: ['saved-plan', run.id, wf.planFilePath],

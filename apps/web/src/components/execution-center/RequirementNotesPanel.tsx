@@ -121,14 +121,21 @@ export function RequirementNotesPanel({
   );
 }
 
-/** Read notes from localStorage before a workflow run exists (Jira task draft only). */
+/** Read draft notes from localStorage (pre-start or before API persistence). */
 export function loadStoredNotes(
   taskKey: string | null | undefined,
   runId?: string | null,
 ): string {
-  if (runId || !taskKey) return '';
   try {
-    return localStorage.getItem(storageKey(taskKey, runId)) ?? '';
+    if (runId) {
+      const byRun = localStorage.getItem(storageKey(taskKey, runId));
+      if (byRun) return byRun;
+    }
+    if (taskKey) {
+      const byTask = localStorage.getItem(storageKey(taskKey, null));
+      if (byTask) return byTask;
+    }
+    return localStorage.getItem(storageKey(null, null)) ?? '';
   } catch {
     return '';
   }

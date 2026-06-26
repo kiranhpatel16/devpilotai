@@ -56,3 +56,37 @@ export const taskWarningText = 'text-amber-800 dark:text-amber-300';
 
 export const taskRiskItem =
   'rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200';
+
+/** File list row in Review / Files Changed panels. */
+export function fileListItemClass(selected: boolean): string {
+  const base =
+    'flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors';
+  if (selected) {
+    return `${base} bg-brand-600 text-white shadow-sm ring-1 ring-brand-500/50 dark:bg-brand-600 dark:ring-brand-400/40`;
+  }
+  return `${base} text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-neutral-800/90`;
+}
+
+export function fileActionBadgeClass(action: string, selected = false): string {
+  const a = action.toLowerCase();
+  const base = 'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold leading-none';
+  if (selected) {
+    if (a === 'create') return `${base} bg-emerald-300/30 text-emerald-50`;
+    if (a === 'delete') return `${base} bg-red-300/30 text-red-50`;
+    return `${base} bg-white/25 text-white`;
+  }
+  if (a === 'create') {
+    return `${base} bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300`;
+  }
+  if (a === 'delete') {
+    return `${base} bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-400`;
+  }
+  return `${base} bg-brand-100 text-brand-800 dark:bg-brand-600/20 dark:text-brand-300`;
+}
+
+export function filePathTextClass(selected: boolean): string {
+  return [
+    'min-w-0 flex-1 break-all font-mono text-[11px] leading-snug',
+    selected ? 'text-white' : 'text-slate-800 dark:text-slate-200',
+  ].join(' ');
+}
