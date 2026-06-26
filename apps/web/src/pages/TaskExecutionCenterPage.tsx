@@ -298,7 +298,7 @@ function TaskExecutionCenterPageInner() {
     detail.run.status !== 'paused' &&
     detail.run.status !== 'cancelled' &&
     !isAgentStepAwaitingRun(detail) &&
-    (['agent', 'deploy', 'branch'].includes(wf.currentStep) ||
+    (wf.currentStep === 'agent' ||
       detail.run.status === 'deploying' ||
       !!detail.deploy?.running);
 

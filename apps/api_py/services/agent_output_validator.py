@@ -215,10 +215,17 @@ def validate_deploy_fix_output(
     docker_compose_path: str | None = None,
 ) -> dict[str, list[str]]:
     """Validate deploy-fix proposals — must target error files and apply cleanly."""
+    from services.deploy_error_service import deploy_fix_target_paths
+
     blocking: list[str] = []
     warnings: list[str] = []
     files = output.get("files") or []
-    error_files = {p.replace("\\", "/") for p in (analysis.get("errorFiles") or []) if p}
+    acceptable_targets = {
+        p.replace("\\", "/") for p in deploy_fix_target_paths(analysis) if p
+    }
+    error_files = acceptable_targets or {
+        p.replace("\\", "/") for p in (analysis.get("errorFiles") or []) if p
+    }
 
     if not files:
         blocking.append("No files were proposed for the deploy error.")
@@ -266,10 +273,16 @@ def validate_deploy_fix_output(
                 )
 
     if error_files and not (proposed_paths & error_files):
-        blocking.append(
-            "Fix must edit at least one file named in the deploy error: "
-            + ", ".join(sorted(error_files))
-        )
+        if analysis.get("generatedError"):
+            blocking.append(
+                "Fix must edit at least one app/code source file related to this task: "
+                + ", ".join(sorted(error_files))
+            )
+        else:
+            blocking.append(
+                "Fix must edit at least one file named in the deploy error: "
+                + ", ".join(sorted(error_files))
+            )
 
     return {"blocking": blocking, "warnings": warnings}
 

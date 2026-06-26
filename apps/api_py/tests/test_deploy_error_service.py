@@ -7,8 +7,11 @@ from services.deploy_error_service import (
     apply_auto_fixes,
     build_auto_fix_proposals,
     build_php_syntax_auto_fix,
+    enrich_deploy_fix_analysis,
     enrich_deploy_report,
     gather_deploy_fix_excerpts,
+    merge_deploy_analysis,
+    deploy_fix_target_paths,
     _fix_db_schema_content,
     _fix_webapi_content,
 )
@@ -542,6 +545,85 @@ class DeployErrorServiceTests(unittest.TestCase):
             from services.agent_output_validator import _lint_php_content
             self.assertIsNone(_lint_php_content("php", fixed))
             self.assertEqual(fixed.count("}"), 2)
+
+    def test_enrich_deploy_fix_analysis_maps_generated_error_to_app_code(self):
+        source = "app/code/Bitbag/PDSlavery/Plugin/DbAdapterPlugin.php"
+        deploy = {
+            "ok": False,
+            "steps": [{
+                "key": "di_compile",
+                "ok": False,
+                "skipped": False,
+                "output": (
+                    "Parse error: syntax error in "
+                    "/var/www/html/generated/code/Magento/Framework/DB/Adapter/"
+                    "AdapterInterface/Interceptor.php on line 22\n"
+                ),
+            }],
+        }
+        detail = {
+            "output": {
+                "files": [{"path": source, "action": "modify"}],
+            },
+        }
+        analysis = enrich_deploy_fix_analysis(
+            analyze_deploy_failure(deploy, "/var/www/html"),
+            detail,
+            "/var/www/html",
+        )
+        self.assertTrue(analysis.get("generatedError"))
+        self.assertIn(source, analysis.get("fixTargets") or [])
+        self.assertIn(source, deploy_fix_target_paths(analysis))
+        self.assertNotIn(
+            "generated/code/Magento/Framework/DB/Adapter/AdapterInterface/Interceptor.php",
+            deploy_fix_target_paths(analysis),
+        )
+
+    def test_merge_deploy_analysis_uses_stored_raw_output(self):
+        deploy = {
+            "ok": False,
+            "steps": [],
+            "analysis": {
+                "rawOutput": "Parse error in /var/www/html/app/code/Vendor/Module/Model/Broken.php",
+                "summary": "PHP error",
+                "issues": [{"kind": "php_runtime", "file": "app/code/Vendor/Module/Model/Broken.php"}],
+            },
+        }
+        merged = merge_deploy_analysis(deploy, "/var/www/html")
+        self.assertIn("Parse error", merged.get("rawOutput") or "")
+        self.assertTrue(merged.get("issues"))
+
+    def test_enrich_maps_docker_absolute_generated_path(self):
+        deploy = {
+            "ok": False,
+            "steps": [{
+                "key": "di_compile",
+                "ok": False,
+                "skipped": False,
+                "output": (
+                    'PHP Fatal error: Cannot use "parent" when current class scope has no parent in '
+                    "/var/www/html/generated/code/Magento/Framework/DB/Adapter/"
+                    "AdapterInterface/Interceptor.php on line 22\n"
+                ),
+            }],
+        }
+        cwd = "/var/www/html/fabric5anddime_m2"
+        detail = {
+            "output": {
+                "files": [{"path": "app/code/Belvg/POboxes/Test/Unit/Helper/DataTest.php"}],
+            },
+        }
+        analysis = enrich_deploy_fix_analysis(
+            analyze_deploy_failure(deploy, cwd),
+            detail,
+            cwd,
+        )
+        self.assertTrue(analysis.get("generatedError"))
+        self.assertIn(
+            "generated/code/Magento/Framework/DB/Adapter/AdapterInterface/Interceptor.php",
+            analysis.get("errorFiles") or [],
+        )
+        self.assertTrue(analysis.get("fixTargets"))
 
 
 if __name__ == "__main__":
