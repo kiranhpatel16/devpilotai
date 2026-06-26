@@ -1,4 +1,5 @@
 import type { AiProviderInfo, Project } from '@cpwork/shared';
+import { providerSetupHint } from '../../lib/aiProviderHints';
 import { taskInput, taskMuted, taskPanel, taskPanelHeader, taskStrong, taskTitle } from './taskStyles';
 
 interface BranchSetupPanelProps {
@@ -25,6 +26,8 @@ export function BranchSetupPanel({
   readOnly,
 }: BranchSetupPanelProps) {
   const activeProvider = providers.find((p) => p.id === provider) ?? providers[0];
+  const effectiveModel = model || activeProvider?.defaultModel || '';
+  const hint = providerSetupHint(provider, effectiveModel, providers);
 
   return (
     <div className={taskPanel}>
@@ -79,6 +82,16 @@ export function BranchSetupPanel({
             </select>
           </div>
         </div>
+        {hint && (
+          <p className={`rounded-md border border-brand-500/20 bg-brand-500/5 px-3 py-2 text-xs leading-relaxed ${taskMuted}`}>
+            {hint}
+          </p>
+        )}
+        <p className={`text-[11px] leading-relaxed ${taskMuted}`}>
+          <strong className={taskStrong}>Best workflow today:</strong> ChatGPT gpt-4o for plan + automated
+          code in DevPilot; Cursor IDE (optional) for manual review and XML/layout fixes on the Review
+          step.
+        </p>
       </div>
     </div>
   );

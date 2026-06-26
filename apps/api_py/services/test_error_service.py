@@ -10,6 +10,7 @@ from services.prompt_budget import trim_excerpts, trim_text
 from services.repo_context import _read_excerpt
 
 PHP_PATH_RE = re.compile(r"(app/code/[^\s:'\"<>]+\.php)")
+LAYOUT_PATH_RE = re.compile(r"(app/(?:design|code)/[^\s:'\"<>]+\.(?:xml|phtml))", re.IGNORECASE)
 PHPUNIT_CLASS_RE = re.compile(
     r"([\w\\]+Test(?:::[\w]+)?)",
 )
@@ -109,6 +110,11 @@ def _paths_from_test_output(output: str) -> list[str]:
         if rel not in seen:
             seen.add(rel)
             paths.append(rel)
+    for match in LAYOUT_PATH_RE.finditer(output or ""):
+        rel = match.group(1).lstrip("/")
+        if rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
     for match in PHPUNIT_CLASS_RE.finditer(output or ""):
         fqcn = match.group(1).split("::")[0]
         parts = fqcn.replace("\\", "/").split("/")
@@ -149,6 +155,16 @@ def analyze_test_failure(test_report: dict | None) -> dict[str, Any]:
     for step in failed_steps:
         output = step.get("output") or ""
         raw_chunks.append(f"=== {step.get('label', step.get('key', 'check'))} ===\n{output}")
+        storefront = step.get("storefrontError")
+        if isinstance(storefront, dict):
+            if storefront.get("file"):
+                rel = str(storefront["file"]).lstrip("/")
+                if rel not in error_files:
+                    error_files.append(rel)
+            if storefront.get("message"):
+                raw_chunks.append(f"Storefront error: {storefront['message']}")
+            for detail in storefront.get("details") or []:
+                raw_chunks.append(str(detail))
         label = step.get("label") or ""
         label_match = PHPUNIT_LABEL_PATH_RE.search(label)
         if label_match:
@@ -206,7 +222,7 @@ def gather_test_fix_excerpts(
                 path_excerpts.append({"path": rel, "content": content[:8000]})
 
     for rel in (changed_paths or [])[:4]:
-        if rel.endswith(".php") and rel not in {e["path"] for e in path_excerpts}:
+        if rel.endswith((".php", ".xml", ".phtml")) and rel not in {e["path"] for e in path_excerpts}:
             item = _read_excerpt(cwd, rel, 3000)
             if item:
                 path_excerpts.append(item)

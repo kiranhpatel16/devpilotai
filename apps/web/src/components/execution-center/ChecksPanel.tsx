@@ -7,10 +7,10 @@ interface ChecksPanelProps {
 }
 
 const DEFAULT_CHECKS = [
-  { key: 'php_lint', label: 'PHP Lint' },
-  { key: 'static_analysis', label: 'Static Analysis' },
-  { key: 'unit_tests', label: 'Unit Tests' },
-  { key: 'magento_validate', label: 'Magento Validate' },
+  { key: 'php_lint', label: 'PHP Lint (changed files)' },
+  { key: 'phpunit', label: 'PHPUnit (changed tests)' },
+  { key: 'visual_smoke', label: 'Visual smoke' },
+  { key: 'di_compile', label: 'DI compile' },
 ];
 
 export function ChecksPanel({ test }: ChecksPanelProps) {

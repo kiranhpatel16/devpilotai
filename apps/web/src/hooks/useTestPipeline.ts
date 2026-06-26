@@ -9,6 +9,11 @@ function hasFailedChecks(test: RunDetail['test']): boolean {
   return test.steps.some((s) => !s.ok && !s.skipped);
 }
 
+function hasVisualSmokeFailure(test: RunDetail['test']): boolean {
+  const step = test?.steps?.find((s) => s.key === 'visual_smoke');
+  return !!step && !step.ok && !step.skipped;
+}
+
 export function useTestPipeline(detail: RunDetail, onChange: (d: RunDetail) => void) {
   const runId = detail.run.id;
   const [testRunning, setTestRunning] = useState(false);
@@ -44,6 +49,21 @@ export function useTestPipeline(detail: RunDetail, onChange: (d: RunDetail) => v
     return result;
   }
 
+  const runFixCycle = useCallback(async (): Promise<RunDetail | null> => {
+    try {
+      const fixDetail = await runTestFix();
+      const paths = fixDetail.diffs?.map((d) => d.path) ?? [];
+      if (!paths.length) {
+        setPipelineError('AI agent did not propose any file changes.');
+        return null;
+      }
+      return await applyTestFix(fixDetail);
+    } catch (err) {
+      setPipelineError(getApiErrorMessage(err));
+      return null;
+    }
+  }, [onChange, runId]);
+
   const runTestsWithAutoFix = useCallback(async (): Promise<boolean> => {
     if (pipelineRunningRef.current) return false;
     pipelineRunningRef.current = true;
@@ -63,16 +83,9 @@ export function useTestPipeline(detail: RunDetail, onChange: (d: RunDetail) => v
         setTestFixing(true);
 
         try {
-          const fixDetail = await runTestFix();
-          const paths = fixDetail.diffs?.map((d) => d.path) ?? [];
-          if (!paths.length) {
-            setPipelineError('AI agent did not propose any file changes.');
-            return false;
-          }
-          current = await applyTestFix(fixDetail);
-        } catch (err) {
-          setPipelineError(getApiErrorMessage(err));
-          return false;
+          const fixed = await runFixCycle();
+          if (!fixed) return false;
+          current = fixed;
         } finally {
           setTestFixing(false);
           setTestRunning(true);
@@ -94,10 +107,36 @@ export function useTestPipeline(detail: RunDetail, onChange: (d: RunDetail) => v
       setTestRunning(false);
       setTestFixing(false);
     }
-  }, [onChange, runId]);
+  }, [onChange, runId, runFixCycle]);
+
+  const runVisualSmokeFix = useCallback(async (): Promise<boolean> => {
+    if (pipelineRunningRef.current) return false;
+    pipelineRunningRef.current = true;
+    setPipelineError(null);
+    setTestFixing(true);
+
+    try {
+      const fixed = await runFixCycle();
+      if (!fixed) return false;
+
+      setTestFixing(false);
+      setTestRunning(true);
+      const current = await runTestsOnce();
+      return current.test?.ok === true;
+    } catch (err) {
+      setPipelineError(getApiErrorMessage(err));
+      return false;
+    } finally {
+      pipelineRunningRef.current = false;
+      setTestRunning(false);
+      setTestFixing(false);
+    }
+  }, [onChange, runId, runFixCycle]);
 
   return {
     runTestsWithAutoFix,
+    runVisualSmokeFix,
+    hasVisualSmokeFailure: hasVisualSmokeFailure(detail.test),
     testRunning,
     testFixing,
     pipelineRunning: testRunning || testFixing,

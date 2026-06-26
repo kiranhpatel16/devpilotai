@@ -65,6 +65,7 @@ class StartWorkflowBody(BaseModel):
     customTitle: Optional[str] = None
     customTaskKey: Optional[str] = None
     customRequirements: Optional[str] = None
+    userInstructions: Optional[str] = None
 
 
 class UpdateStepBody(BaseModel):
@@ -415,6 +416,7 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
         except Exception:
             jira_snapshot = {"key": jira_key, "summary": jira_key, "description": ""}
 
+    user_instructions = (body.userInstructions or "").strip() or None
     run = runs_repo.create({
         "projectId": body.projectId,
         "userId": auth["sub"],
@@ -423,7 +425,7 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
         "provider": None,
         "model": None,
         "branchName": None,
-        "userInstructions": None,
+        "userInstructions": user_instructions,
         "status": "selected",
     })
     runs_repo.update_fields(run["id"], {

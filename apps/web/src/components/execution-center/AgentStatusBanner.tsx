@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { Activity, RunDetail } from '@cpwork/shared';
 import { api } from '../../lib/api';
 import { isAgentStepAwaitingRun } from '../../lib/workflowAdvance';
-import { AGENT_DEFINITIONS } from '../layout/navConfig';
+import { formatWorkflowStatusLine, getWorkflowAgentStatus, shouldPollWorkflow } from '../../lib/workflowStatus';
 import { taskMuted, taskSurface, taskTitle } from './taskStyles';
 
 interface AgentStatusBannerProps {
@@ -10,30 +10,6 @@ interface AgentStatusBannerProps {
   runId: string | null;
   polling: boolean;
 }
-
-const STEP_AGENT: Record<string, string> = {
-  select: 'planner',
-  describe: 'planner',
-  plan: 'planner',
-  review_plan: 'planner',
-  branch: 'developer',
-  agent: 'developer',
-  code_review: 'reviewer',
-  deploy: 'deployment',
-  commit: 'deployment',
-  jira_comment: 'deployment',
-  done: 'deployment',
-};
-
-const STEP_MESSAGE: Record<string, string> = {
-  agent: 'Generating code…',
-  plan: 'Building implementation plan…',
-  review_plan: 'Awaiting plan approval…',
-  code_review: 'Reviewing changes…',
-  deploy: 'Running tests & deploy…',
-  commit: 'Preparing commit…',
-  jira_comment: 'Posting Jira update…',
-};
 
 export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerProps) {
   const pollQ = useQuery({
@@ -56,25 +32,11 @@ export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerP
   });
 
   const activeDetail = pollQ.data ?? detail;
-  const step = activeDetail?.workflow?.currentStep;
-  const runStatus = activeDetail?.run.status;
-  if (!step) return null;
-
-  let agentId = STEP_AGENT[step] ?? 'planner';
-  let message = STEP_MESSAGE[step] ?? `Processing ${step.replace(/_/g, ' ')}…`;
-
-  if (runStatus === 'awaiting_review' || step === 'code_review') {
-    agentId = 'reviewer';
-    message = 'Awaiting your review';
-  }
+  const lastActivity = activitiesQ.data?.[0];
+  const status = getWorkflowAgentStatus(activeDetail, lastActivity);
+  if (!status) return null;
 
   const awaitingRun = isAgentStepAwaitingRun(activeDetail);
-  if (awaitingRun) {
-    message = 'Ready — click Run agent to start';
-  }
-
-  const agent = AGENT_DEFINITIONS.find((a) => a.id === agentId);
-  const lastActivity = activitiesQ.data?.[0];
   const showPulse = polling && !awaitingRun;
 
   return (
@@ -90,8 +52,7 @@ export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerP
             <span className="relative inline-flex h-2 w-2 rounded-full bg-slate-400 dark:bg-neutral-500" />
           )}
         </span>
-        <span className={`text-sm font-medium ${taskTitle}`}>{agent?.label ?? 'Agent'}</span>
-        <span className={`text-xs ${taskMuted}`}>{message}</span>
+        <span className={`text-sm font-medium ${taskTitle}`}>{formatWorkflowStatusLine(status)}</span>
       </div>
       {lastActivity && (
         <span className={`truncate text-xs ${taskMuted}`}>{lastActivity.summary}</span>
@@ -99,3 +60,5 @@ export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerP
     </div>
   );
 }
+
+export { shouldPollWorkflow };

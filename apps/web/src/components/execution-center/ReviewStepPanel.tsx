@@ -7,6 +7,9 @@ import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { DiffView } from '../DiffView';
 import { previousStep } from '../task-workflow/constants';
 import {
+  fileActionBadgeClass,
+  fileListItemClass,
+  filePathTextClass,
   taskAccent,
   taskAccentHover,
   taskBody,
@@ -33,11 +36,15 @@ interface ReviewStepPanelProps {
   onWorkflowTabChange?: (tab: 'tests') => void;
 }
 
-function statusBadge(action: string) {
+function statusBadge(action: string, selected = false) {
+  return { label: statusBadgeLabel(action), className: fileActionBadgeClass(action, selected) };
+}
+
+function statusBadgeLabel(action: string): string {
   const a = action.toLowerCase();
-  if (a === 'create') return { label: 'A', className: 'bg-emerald-500/20 text-emerald-400' };
-  if (a === 'delete') return { label: 'D', className: 'bg-red-500/20 text-red-400' };
-  return { label: 'M', className: 'bg-brand-600/20 text-brand-300' };
+  if (a === 'create') return 'A';
+  if (a === 'delete') return 'D';
+  return 'M';
 }
 
 export function ReviewStepPanel({
@@ -120,10 +127,10 @@ export function ReviewStepPanel({
     onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
   });
 
-  useWorkflowBusy('apply-changes', applyM.isPending, 'Applying changes…');
-  useWorkflowBusy('refine-code', refineM.isPending, 'Updating changes…');
-  useWorkflowBusy('revert-changes', revertM.isPending, 'Reverting changes…');
-  useWorkflowBusy('approve-code-review', approveM.isPending, 'Approving code…');
+  useWorkflowBusy('apply-changes', applyM.isPending, 'Applying changes…', 'Writing approved AI file changes to your local project.');
+  useWorkflowBusy('refine-code', refineM.isPending, 'Updating changes…', 'The Developer Agent is revising code based on your feedback.');
+  useWorkflowBusy('revert-changes', revertM.isPending, 'Reverting changes…', 'Restoring files to their state before the last agent proposal.');
+  useWorkflowBusy('approve-code-review', approveM.isPending, 'Approving code…', 'Moving to the Tests step to run PHPUnit and validation.');
 
   const prev = previousStep(step);
   const hasChecklist = manualTestChecklist.length > 0 || risks.length > 0;
@@ -236,24 +243,21 @@ export function ReviewStepPanel({
             </div>
             <ul className="flex-1 overflow-y-auto p-2">
               {files.map((f) => {
-                const badge = statusBadge(f.action ?? 'modify');
+                const isActive = activePath === f.path;
+                const badge = statusBadge(f.action ?? 'modify', isActive);
                 const diff = diffs.find((d) => d.path === f.path);
                 return (
                   <li key={f.path}>
                     <button
                       type="button"
                       onClick={() => setSelectedPath(f.path)}
-                      className={[
-                        'flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left',
-                        activePath === f.path
-                          ? 'bg-brand-600/20 text-brand-300'
-                          : 'text-slate-400 hover:bg-slate-800',
-                      ].join(' ')}
+                      className={fileListItemClass(isActive)}
+                      aria-current={isActive ? 'true' : undefined}
                     >
                       {!detail.applied && (
                         <input
                           type="checkbox"
-                          className="mt-0.5"
+                          className="mt-0.5 accent-brand-600"
                           disabled={!!diff?.error}
                           checked={selected.includes(f.path)}
                           onChange={(e) => {
@@ -267,12 +271,8 @@ export function ReviewStepPanel({
                           onClick={(e) => e.stopPropagation()}
                         />
                       )}
-                      <span className={`shrink-0 rounded px-1 text-[10px] font-bold ${badge.className}`}>
-                        {badge.label}
-                      </span>
-                      <span className="min-w-0 flex-1 break-all font-mono text-[11px] leading-snug">
-                        {f.path}
-                      </span>
+                      <span className={badge.className}>{badge.label}</span>
+                      <span className={filePathTextClass(isActive)}>{f.path}</span>
                     </button>
                   </li>
                 );
@@ -294,8 +294,8 @@ export function ReviewStepPanel({
 
           <div className="flex min-h-0 flex-col">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800/60 px-3 py-2">
-              <span className="truncate font-mono text-xs text-slate-400">{activePath}</span>
-              <div className="flex rounded-md border border-slate-600 p-0.5 text-xs">
+              <span className={`truncate font-mono text-xs ${taskBody}`}>{activePath}</span>
+              <div className="flex rounded-md border border-slate-300 p-0.5 text-xs dark:border-neutral-600">
                 <button
                   type="button"
                   className={

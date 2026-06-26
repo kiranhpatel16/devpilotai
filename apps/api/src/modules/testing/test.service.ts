@@ -64,25 +64,29 @@ export async function runTests(
     });
   }
 
-  // T2 — PHPUnit (unit suite) if configured.
-  const phpunit = path.join(cwd, 'vendor', 'bin', 'phpunit');
-  const unitConfig = path.join(cwd, 'dev', 'tests', 'unit', 'phpunit.xml.dist');
-  if (fs.existsSync(phpunit) && fs.existsSync(unitConfig)) {
-    const r = await run(phpunit, ['-c', unitConfig], cwd);
-    steps.push({
-      key: 'phpunit',
-      label: 'PHPUnit (unit suite)',
-      ok: r.ok,
-      skipped: false,
-      output: r.output,
-    });
+  // T2 — PHPUnit (only changed module unit test files)
+  const moduleTestFiles = changedPaths.filter(
+    (p) => p.replace(/\\/g, '/').includes('/Test/Unit/') && p.endsWith('Test.php'),
+  );
+  if (moduleTestFiles.length > 0) {
+    const phpunit = path.join(cwd, 'vendor', 'bin', 'phpunit');
+    for (const rel of moduleTestFiles) {
+      const r = await run(phpBin, [phpunit, rel], cwd);
+      steps.push({
+        key: `phpunit_${rel.replace(/\//g, '_')}`,
+        label: `PHPUnit (${rel})`,
+        ok: r.ok,
+        skipped: false,
+        output: r.output,
+      });
+    }
   } else {
     steps.push({
       key: 'phpunit',
-      label: 'PHPUnit (unit suite)',
+      label: 'PHPUnit (unit tests)',
       ok: true,
       skipped: true,
-      output: 'vendor/bin/phpunit or dev/tests/unit/phpunit.xml.dist not found.',
+      output: 'Skipped — no changed Test/Unit/*Test.php files.',
     });
   }
 

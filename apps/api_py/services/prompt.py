@@ -81,8 +81,9 @@ IMPLEMENTATION_QUALITY_RULES = """Implementation quality (mandatory — response
 - API/service classes: implement full method bodies with repositories, resource models, or collections — not comment stubs.
 - XML must be valid Magento schema (db_schema: identity= not auto_increment; constraints use nested <column/> children).
 - Wire dependencies in etc/di.xml. Register events, webapi routes, and console commands as needed.
-- ALWAYS include PHPUnit unit tests for new/changed PHP classes under app/code/Vendor/Module/Test/Unit/.
-- Tests must instantiate the class (with mocks) and assert real behavior — not empty test bodies.
+- PHPUnit unit tests: include Test/Unit/*.php ONLY when you create or substantially change PHP classes under app/code/ (Observers, Models, Services, APIs). Do NOT create PHPUnit files for Hyvä/theme-only work (app/design templates, layout XML, CSS/Tailwind).
+- When tests are included, they must instantiate the class (with mocks) and assert real behavior — not empty test bodies.
+- For storefront/theme tasks, use manualTestChecklist with browser verification steps (page URL, section to verify) instead of PHPUnit files.
 - New files that do not exist in the repo yet MUST use action="create" with full "content" — never action="modify" with edits."""
 
 AGENT_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
@@ -110,7 +111,8 @@ CRITICAL rules for files:
     * NEVER add a comment line as the only change. newString must contain executable PHP statements.
 - action="delete": no "content" or "edits".
 - Use repository-relative paths. Only include files you actually change.
-- Include Test/Unit/*.php files for every new Observer, Model, Service, or API class you create or substantially change.
+- Include Test/Unit/*.php only when you add or substantially change PHP classes under app/code/. Skip test files for app/design, layout XML, phtml, and CSS-only changes.
+- manualTestChecklist: list browser verification steps (e.g. "Open homepage — verify new section renders", "/checkout — confirm banner visible"). Do NOT list PHPUnit test files as checklist items.
 
 BAD modify edit (REJECTED):
   oldString: "    public function execute(Observer $observer) {\\n        // Logic to set feed_status = DIRTY\\n    }"
@@ -120,14 +122,17 @@ GOOD modify edit (ACCEPTED):
   oldString: "    public function execute(Observer $observer) {\\n        // Logic to set feed_status = DIRTY\\n    }"
   newString: "    public function __construct(\\n        private readonly FeedRegenerator $feedRegenerator\\n    ) {}\\n\\n    public function execute(Observer $observer): void\\n    {\\n        $this->feedRegenerator->markDirty();\\n    }"
 
-GOOD test file (REQUIRED for new PHP classes):
+GOOD test file (only when new app/code PHP classes are added):
   path: app/code/Vendor/Module/Test/Unit/Observer/ProductSaveAfterTest.php
   action: create
-  content: full PHPUnit test class with mocks and assertions"""
+  content: full PHPUnit test class with mocks and assertions
+
+GOOD manualTestChecklist for Hyvä/theme work (no PHPUnit files):
+  manualTestChecklist: ["Open / — verify custom homepage section is visible", "Confirm Tailwind styles match design"]"""
 
 DEFAULT_MAGENTO_RULES_TEMPLATE = """You are a senior Magento 2 engineer working on a Hyva + Tailwind + Magewire storefront.
 Environment: PHP 8.3, MariaDB 10.6. Magento Admin is the source of truth.
-You work like Cursor IDE: read the task, write complete working code, add unit tests, and wire everything in DI/XML.
+You work like Cursor IDE: read the task, write complete working code, wire everything in DI/XML, and add PHPUnit tests only when PHP module classes change.
 Rules:
 - No core edits. Use DI, plugins, observers, and service contracts.
 - Follow existing module structure under app/code/ and theme structure under app/design/.
@@ -259,7 +264,7 @@ def _validation_retry_block(ctx: dict) -> str:
         "\nRewrite the COMPLETE proposal with:",
         "- Real PHP implementations (constructor DI + method bodies with executable statements)",
         "- NO placeholder comments or duplicate comment lines",
-        "- PHPUnit Test/Unit classes for each new/changed PHP class",
+        "- PHPUnit Test/Unit classes only for new/changed app/code PHP classes (not theme-only work)",
         "- For stub files, prefer action=create with full file content OR replace entire methods in edits",
         "- New files that do not exist in the repo MUST use action=create with full content",
     ]
@@ -337,7 +342,8 @@ def build_prompt(ctx: dict) -> dict:
         return {
             "system": f"{magento_rules}\n\n{agent_output_contract}",
             "user": (
-                f"Implement the following task with COMPLETE, production-ready code and PHPUnit unit tests. "
+                f"Implement the following task with COMPLETE, production-ready code. "
+                f"Add PHPUnit tests only for new app/code PHP classes; use manualTestChecklist for browser verification on theme/Hyvä work. "
                 f"Work like Cursor IDE — write real implementations, not comments describing logic.\n\n"
                 f"{common}{plan_block}{validation_block}"
             ),
@@ -495,7 +501,7 @@ def build_prompt(ctx: dict) -> dict:
 
     if mode == "plan":
         return {
-            "system": f"{magento_rules}\n\nProduce a clear implementation plan. Do NOT write file contents. Use concise markdown with steps, files to touch, and a test checklist.",
+            "system": f"{magento_rules}\n\nProduce a clear implementation plan. Do NOT write file contents. Use concise markdown with steps and files to touch. End with a browser verification checklist (URLs/sections to check) — do NOT plan PHPUnit test files for Hyvä/theme-only tasks.",
             "user": f"Create an implementation plan for this task.\n\n{common}",
             "jsonMode": False,
         }

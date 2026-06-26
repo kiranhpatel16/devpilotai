@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AiProviderInfo } from '@cpwork/shared';
 import { api, getApiErrorMessage } from '../../lib/api';
@@ -94,11 +94,15 @@ function ProviderCard({
   const [defaultModel, setDefaultModel] = useState(provider.defaultModel ?? '');
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? '');
   const [keyConfigured, setKeyConfigured] = useState(provider.configured);
+  const [keyDirty, setKeyDirty] = useState(false);
+  const [keyFieldActive, setKeyFieldActive] = useState(false);
+  const keyInputRef = useRef<HTMLInputElement>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testOk, setTestOk] = useState<boolean | null>(null);
 
   const unavailable = provider.id === 'cursor';
-  const canTest = keyConfigured || !!apiKey.trim();
+  const typedApiKey = keyFieldActive && keyDirty ? apiKey.trim() : '';
+  const canTest = keyConfigured || !!typedApiKey;
 
   useEffect(() => {
     setEnabled(provider.enabled);
@@ -106,7 +110,40 @@ function ProviderCard({
     setDefaultModel(provider.defaultModel ?? '');
     setBaseUrl(provider.baseUrl ?? '');
     setKeyConfigured(provider.configured);
+    setKeyDirty(false);
+    setKeyFieldActive(false);
+    setApiKey('');
+    if (keyInputRef.current) keyInputRef.current.value = '';
   }, [provider.id, provider.enabled, provider.models, provider.defaultModel, provider.baseUrl, provider.configured]);
+
+  function buildSaveBody(includeApiKey = true): Record<string, unknown> {
+    const body: Record<string, unknown> = { enabled, defaultModel, models };
+    if (includeApiKey && typedApiKey) body.apiKey = typedApiKey;
+    if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
+    return body;
+  }
+
+  async function persistProvider(includeApiKey = true): Promise<ProvidersResponse> {
+    return (await api.put(`/admin/ai-providers/${provider.id}`, buildSaveBody(includeApiKey)))
+      .data as ProvidersResponse;
+  }
+
+  function applySavedProvider(data: ProvidersResponse) {
+    const saved = data.providers.find((p) => p.id === provider.id);
+    if (saved) {
+      setKeyConfigured(saved.configured);
+      setEnabled(saved.enabled);
+      setModels(saved.models);
+      setDefaultModel(saved.defaultModel ?? defaultModel);
+      setBaseUrl(saved.baseUrl ?? baseUrl);
+    } else if (typedApiKey) {
+      setKeyConfigured(true);
+    }
+    setApiKey('');
+    setKeyDirty(false);
+    setKeyFieldActive(false);
+    if (keyInputRef.current) keyInputRef.current.value = '';
+  }
 
   function addModel() {
     const value = newModel.trim();
@@ -124,24 +161,9 @@ function ProviderCard({
   }
 
   const saveMutation = useMutation({
-    mutationFn: async () => {
-      const body: Record<string, unknown> = { enabled, defaultModel, models };
-      if (apiKey.trim()) body.apiKey = apiKey.trim();
-      if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
-      return (await api.put(`/admin/ai-providers/${provider.id}`, body)).data as ProvidersResponse;
-    },
+    mutationFn: async () => persistProvider(true),
     onSuccess: (data) => {
-      const saved = data.providers.find((p) => p.id === provider.id);
-      if (saved) {
-        setKeyConfigured(saved.configured);
-        setEnabled(saved.enabled);
-        setModels(saved.models);
-        setDefaultModel(saved.defaultModel ?? defaultModel);
-        setBaseUrl(saved.baseUrl ?? baseUrl);
-      } else if (apiKey.trim()) {
-        setKeyConfigured(true);
-      }
-      setApiKey('');
+      applySavedProvider(data);
       setTestResult(null);
       setTestOk(null);
       onSaved();
@@ -152,7 +174,7 @@ function ProviderCard({
     mutationFn: async () =>
       (
         await api.post(`/admin/ai-providers/${provider.id}/test`, {
-          ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+          ...(typedApiKey ? { apiKey: typedApiKey } : {}),
           ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
           ...(defaultModel ? { defaultModel } : {}),
         })
@@ -161,8 +183,22 @@ function ProviderCard({
       setTestResult(null);
       setTestOk(null);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setTestOk(true);
+      if (typedApiKey) {
+        try {
+          const data = await persistProvider(true);
+          applySavedProvider(data);
+          onSaved();
+          setTestResult('Connection OK — key saved');
+        } catch (err) {
+          setTestOk(false);
+          setTestResult(
+            `Connection OK, but saving the key failed: ${getApiErrorMessage(err)}. Click Save to retry.`,
+          );
+        }
+        return;
+      }
       setTestResult('Connection OK');
     },
     onError: (err) => {
@@ -209,23 +245,45 @@ function ProviderCard({
       </div>
 
       {unavailable ? (
-        <p className="rounded-md bg-slate-50 p-2 text-xs text-slate-500">
-          Cursor SDK runtime is not wired in this build. Use ChatGPT, Grok, or Cloud AI.
-        </p>
+        <div className="space-y-2 rounded-md bg-slate-50 p-3 text-xs text-slate-600 dark:bg-neutral-900 dark:text-slate-400">
+          <p className="font-medium text-slate-700 dark:text-slate-300">Cursor AI (optional)</p>
+          <p>
+            Cursor SDK is not wired into automated plan/code runs in this build. For development,
+            use <strong>ChatGPT (gpt-4o)</strong> in DevPilot for plan and agent steps, and use{' '}
+            <strong>Cursor IDE</strong> on your machine to fix layout XML and theme files after Review.
+          </p>
+        </div>
       ) : (
         <>
           <div>
             <label className="label">API key {keyConfigured && '(leave blank to keep)'}</label>
             <input
+              ref={keyInputRef}
               type="password"
               className="input"
-              placeholder={keyConfigured ? '•••••••• stored' : 'Paste API key'}
+              name={`cpwork-ai-provider-key-${provider.id}`}
+              id={`cpwork-ai-provider-key-${provider.id}`}
+              autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore
+              readOnly={!keyFieldActive}
+              placeholder={keyConfigured ? 'Click to replace stored key' : 'Paste API key'}
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onFocus={() => setKeyFieldActive(true)}
+              onChange={(e) => {
+                if (!keyFieldActive) return;
+                setApiKey(e.target.value);
+                setKeyDirty(!!e.target.value.trim());
+              }}
             />
-            {keyConfigured && (
+            {keyDirty && keyFieldActive ? (
+              <p className="mt-1 text-xs text-amber-700">
+                New key entered — click Save, or Test connection (a successful test saves the key
+                automatically).
+              </p>
+            ) : keyConfigured ? (
               <p className="mt-1 text-xs text-green-700">API key saved for this provider.</p>
-            )}
+            ) : null}
           </div>
           <div>
             <label className="label">Models</label>
@@ -323,7 +381,9 @@ function ProviderCard({
               onClick={() => testMutation.mutate()}
               title={
                 canTest
-                  ? 'Uses the typed key or the saved provider key when the field is blank'
+                  ? keyDirty
+                    ? 'Tests with the typed key and saves it when the test succeeds'
+                    : 'Uses the saved provider key when the field is blank'
                   : 'Paste an API key or save one first'
               }
             >

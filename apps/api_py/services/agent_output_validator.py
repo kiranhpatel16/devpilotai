@@ -136,15 +136,22 @@ def validate_agent_output(cwd: str, output: dict[str, Any]) -> dict[str, list[st
 
     has_new_php_class = False
     has_test_file = False
+    has_theme_only_changes = True
 
     for change in files:
         path = (change.get("path") or "").replace("\\", "/")
         if not path:
             continue
 
-        if PHP_CODE_FILE_RE.search(path):
+        if path.startswith("app/code/") and PHP_CODE_FILE_RE.search(path):
             if change.get("action") == "create" and "/Test/" not in path:
                 has_new_php_class = True
+                has_theme_only_changes = False
+            elif change.get("action") in ("create", "modify") and "/Test/" not in path:
+                has_theme_only_changes = False
+        elif not path.startswith("app/design/") and not path.endswith((".phtml", ".css", ".less")):
+            if change.get("action") in ("create", "modify"):
+                has_theme_only_changes = False
         if "/Test/Unit/" in path or path.endswith("Test.php"):
             has_test_file = True
 
@@ -175,7 +182,12 @@ def validate_agent_output(cwd: str, output: dict[str, Any]) -> dict[str, list[st
 
     if has_new_php_class and not has_test_file:
         warnings.append(
-            "Consider adding PHPUnit tests under Test/Unit/ for new PHP classes."
+            "Consider adding PHPUnit tests under Test/Unit/ for new app/code PHP classes."
+        )
+    if has_test_file and has_theme_only_changes:
+        warnings.append(
+            "PHPUnit test files are not needed for theme-only changes — remove Test/Unit files "
+            "and use manualTestChecklist for browser verification instead."
         )
 
     return {"blocking": blocking, "warnings": warnings}
