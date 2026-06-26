@@ -400,8 +400,17 @@ def build_prompt(ctx: dict) -> dict:
             f"- {i.get('kind')}: {i.get('message')}" for i in analysis.get("issues") or []
         )
         error_files = analysis.get("errorFiles") or []
+        fix_targets = analysis.get("fixTargets") or []
         target_block = ""
-        if error_files:
+        if analysis.get("generatedError") and fix_targets:
+            target_block = (
+                "\n\nPRIMARY FIX TARGETS (edit these app/code source files — NOT generated/ or vendor/):\n"
+                + "\n".join(f"- {path}" for path in fix_targets)
+                + "\n\nThe deploy error references generated Magento code. Do NOT edit generated/ "
+                "or vendor/ files. Fix the plugin, DI configuration, or PHP class that caused "
+                "the bad generated interceptor."
+            )
+        elif error_files:
             target_block = (
                 "\n\nPRIMARY FIX TARGETS (edit these files — they are named in the deploy error):\n"
                 + "\n".join(f"- {path}" for path in error_files)
@@ -462,11 +471,17 @@ def build_prompt(ctx: dict) -> dict:
         slim_common = (
             f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}"
         )
+        fix_instructions = (ctx.get("deployFixInstructions") or "").strip()
+        instructions_block = ""
+        if fix_instructions:
+            instructions_block = (
+                f"\n\nDeveloper instructions for this deploy fix (follow closely):\n{fix_instructions}\n"
+            )
         return {
             "system": f"{DEPLOY_FIX_RULES}\n\n{DEPLOY_FIX_OUTPUT_CONTRACT}",
             "user": (
                 "A local Magento deployment failed. Fix the error with minimal, targeted file changes.\n\n"
-                f"{slim_common}{plan_block}{target_block}{retry_block}{syntax_block}\n\n"
+                f"{slim_common}{plan_block}{target_block}{retry_block}{syntax_block}{instructions_block}\n\n"
                 f"Deploy failure summary: {analysis.get('summary', 'Unknown')}\n"
                 f"Failed step: {analysis.get('failedStep') or 'unknown'}\n"
                 f"Issues:\n{issue_lines or '(see deploy output below)'}\n\n"

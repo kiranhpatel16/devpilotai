@@ -103,6 +103,222 @@ WEBAPI_DEFAULT_RESOURCES = (
     "        </resources>"
 )
 
+NON_SOURCE_ERROR_PREFIXES = (
+    "generated/",
+    "var/generation/",
+    "var/generated/",
+    "vendor/",
+)
+
+
+def is_non_source_error_path(path: str | None) -> bool:
+    if not path:
+        return False
+    normalized = path.replace("\\", "/")
+    return any(normalized.startswith(prefix) for prefix in NON_SOURCE_ERROR_PREFIXES)
+
+
+def _changed_app_code_paths(detail: dict | None) -> list[str]:
+    if not detail:
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for entry in (detail.get("output") or {}).get("files") or []:
+        rel = (entry.get("path") or "").replace("\\", "/")
+        if not rel.startswith("app/code/") or rel in seen:
+            continue
+        seen.add(rel)
+        paths.append(rel)
+    return paths
+
+
+def _find_likely_di_fix_targets(cwd: str, raw_output: str) -> list[str]:
+    """Heuristic: locate app/code plugins related to a generated Interceptor failure."""
+    match = re.search(
+        r"generated/code/(.+?)/Interceptor\.php",
+        raw_output.replace("\\", "/"),
+        re.IGNORECASE,
+    )
+    if not match:
+        return []
+
+    fqcn = match.group(1).replace("/", "\\")
+    short_name = fqcn.rsplit("\\", 1)[-1]
+    app_code = os.path.join(cwd, "app", "code")
+    if not os.path.isdir(app_code):
+        return []
+
+    targets: list[str] = []
+    seen: set[str] = set()
+    for dirpath, _dirs, files in os.walk(app_code):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, cwd).replace("\\", "/")
+            if rel in seen:
+                continue
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fp:
+                    content = fp.read()
+            except OSError:
+                continue
+            if fqcn not in content and short_name not in content:
+                continue
+            if "parent::" in content or "Plugin" in fname or "Interceptor" in fname:
+                seen.add(rel)
+                targets.append(rel)
+    return targets[:8]
+
+
+def merge_deploy_analysis(deploy: dict | None, cwd: str) -> dict[str, Any]:
+    """Re-analyze deploy output, falling back to stored analysis when needed."""
+    fresh = analyze_deploy_failure(deploy, cwd)
+    stored = (deploy or {}).get("analysis") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+
+    merged = {**stored, **fresh}
+    if not fresh.get("rawOutput") and stored.get("rawOutput"):
+        merged["rawOutput"] = stored["rawOutput"]
+    if not fresh.get("issues") and stored.get("issues"):
+        merged["issues"] = stored["issues"]
+    if not fresh.get("errorFiles") and stored.get("errorFiles"):
+        merged["errorFiles"] = stored["errorFiles"]
+    if not fresh.get("summary") and stored.get("summary"):
+        merged["summary"] = stored["summary"]
+    if fresh.get("failedStep"):
+        merged["failedStep"] = fresh["failedStep"]
+    return merged
+
+
+def _non_source_paths_from_analysis(analysis: dict[str, Any], cwd: str) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for path in analysis.get("errorFiles") or []:
+        rel = _rel_path(cwd, path) if path.startswith("/") else path.replace("\\", "/")
+        if rel and is_non_source_error_path(rel) and rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
+    for rel in _paths_from_deploy_output(analysis.get("rawOutput") or "", cwd):
+        if is_non_source_error_path(rel) and rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
+    for issue in analysis.get("issues") or []:
+        for key in ("file", "reportedPath"):
+            raw = issue.get(key)
+            if not raw:
+                continue
+            rel = _rel_path(cwd, raw) if str(raw).startswith("/") else str(raw).replace("\\", "/")
+            if rel and is_non_source_error_path(rel) and rel not in seen:
+                seen.add(rel)
+                paths.append(rel)
+    return paths
+
+
+def sanitize_deploy_fix_files(
+    cwd: str,
+    analysis: dict[str, Any],
+    files: list[dict],
+) -> list[dict]:
+    """Drop generated/vendor proposals; keep app/code fixes the agent should apply."""
+    from services.git_service import normalize_agent_path
+
+    acceptable = {p.replace("\\", "/") for p in deploy_fix_target_paths(analysis) if p}
+    sanitized: list[dict] = []
+    for change in files:
+        raw_path = change.get("path") or ""
+        path = normalize_agent_path(cwd, raw_path)
+        if not path:
+            continue
+        if is_non_source_error_path(path):
+            continue
+        if acceptable and path not in acceptable:
+            continue
+        sanitized.append({**change, "path": path})
+    return sanitized
+
+
+def enrich_deploy_fix_analysis(
+    analysis: dict[str, Any],
+    detail: dict | None,
+    cwd: str,
+) -> dict[str, Any]:
+    """
+    When DI compile fails in generated/vendor output, steer fixes to app/code sources.
+    Generated interceptors are symptoms — edit the plugin/DI/class that caused them.
+    """
+    enriched = {**analysis}
+    error_files = list(enriched.get("errorFiles") or [])
+    issues = list(enriched.get("issues") or [])
+
+    non_source = _non_source_paths_from_analysis(enriched, cwd)
+    for path in non_source:
+        if path not in error_files:
+            error_files.append(path)
+    enriched["errorFiles"] = error_files
+
+    if not non_source:
+        return enriched
+
+    changed = _changed_app_code_paths(detail)
+    fix_targets = [path for path in changed if not is_non_source_error_path(path)]
+    if not fix_targets or all("/Test/" in path for path in fix_targets):
+        likely = _find_likely_di_fix_targets(cwd, enriched.get("rawOutput") or "")
+        for path in likely:
+            if path not in fix_targets:
+                fix_targets.append(path)
+    if not fix_targets:
+        for rel in _paths_from_deploy_output(enriched.get("rawOutput") or "", cwd):
+            if rel.startswith("app/code/") and rel not in fix_targets:
+                fix_targets.append(rel)
+
+    if not fix_targets:
+        return enriched
+
+    for path in fix_targets:
+        if path not in error_files:
+            error_files.append(path)
+
+    enriched["errorFiles"] = error_files
+    enriched["fixTargets"] = fix_targets
+    enriched["generatedError"] = True
+    enriched["aiFixable"] = True
+
+    if not any(issue.get("kind") == "generated_di_source" for issue in issues):
+        reported = non_source[0]
+        issues.append({
+            "kind": "generated_di_source",
+            "file": fix_targets[0],
+            "reportedPath": reported,
+            "message": (
+                f"DI compile failed in generated file ({reported}). "
+                f"Fix the source in app/code — likely a plugin, preference, or constructor "
+                f"signature issue in: {', '.join(fix_targets[:4])}"
+            ),
+            "autoFixable": False,
+        })
+    enriched["issues"] = issues
+    return enriched
+
+
+def deploy_fix_target_paths(analysis: dict[str, Any]) -> list[str]:
+    """Paths the deploy-fix proposal is allowed to edit."""
+    fix_targets = analysis.get("fixTargets") or []
+    error_files = analysis.get("errorFiles") or []
+    preferred = [
+        path.replace("\\", "/")
+        for path in fix_targets
+        if path and not is_non_source_error_path(path)
+    ]
+    if preferred:
+        return preferred
+    return [
+        path.replace("\\", "/")
+        for path in error_files
+        if path and not is_non_source_error_path(path)
+    ]
+
 
 def _failed_step_output(deploy: dict | None) -> tuple[str, str | None]:
     if not deploy:
@@ -116,9 +332,16 @@ def _failed_step_output(deploy: dict | None) -> tuple[str, str | None]:
 
 def _rel_path(cwd: str, reported_path: str) -> str | None:
     normalized = reported_path.replace("\\", "/")
-    cwd_norm = os.path.normpath(cwd).replace("\\", "/")
+    cwd_norm = os.path.normpath(cwd).replace("\\", "/").rstrip("/")
     if normalized.startswith(cwd_norm + "/"):
         return normalized[len(cwd_norm) + 1 :]
+    docker_root = "/var/www/html"
+    if normalized.startswith(docker_root + "/"):
+        docker_rel = normalized[len(docker_root) + 1 :]
+        if os.path.exists(os.path.join(cwd, docker_rel)):
+            return docker_rel
+        if docker_rel.startswith(("generated/", "var/", "vendor/", "app/", "pub/")):
+            return docker_rel
     marker = "/app/code/"
     idx = normalized.find(marker)
     if idx >= 0:
@@ -960,13 +1183,24 @@ def gather_deploy_fix_excerpts(
     """Focused file excerpts for deploy-fix — only files tied to the deploy error."""
     output, _failed_step = _failed_step_output(deploy)
     error_files = analysis.get("errorFiles") or _paths_from_deploy_output(output, cwd)
+    fix_targets = analysis.get("fixTargets") or []
     syntax_files = {
         issue.get("file")
         for issue in (analysis.get("issues") or [])
-        if issue.get("kind") in ("php_syntax", "php_runtime") and issue.get("file")
+        if issue.get("kind") in ("php_syntax", "php_runtime", "generated_di_source") and issue.get("file")
     }
     path_excerpts = []
+    for rel in fix_targets[:6]:
+        if rel in {item["path"] for item in path_excerpts}:
+            continue
+        item = _read_excerpt(cwd, rel, 8000)
+        if item:
+            path_excerpts.append(item)
     for rel in error_files[:6]:
+        if analysis.get("generatedError") and is_non_source_error_path(rel):
+            continue
+        if rel in {item["path"] for item in path_excerpts}:
+            continue
         if rel in syntax_files:
             content = _read_file(cwd, rel)
             if content:

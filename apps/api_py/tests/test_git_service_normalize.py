@@ -2,10 +2,34 @@ import os
 import tempfile
 import unittest
 
-from services.git_service import merge_refined_files, normalize_file_changes, repair_file_changes
+from services.git_service import (
+    merge_refined_files,
+    normalize_agent_path,
+    normalize_file_changes,
+    repair_file_changes,
+)
 
 
 class GitServiceNormalizeTests(unittest.TestCase):
+    def test_normalize_agent_path_maps_docker_root(self):
+        cwd = "/var/www/html/fabric5anddime_m2"
+        raw = "/var/www/html/app/code/Vendor/Module/Plugin/Foo.php"
+        self.assertEqual(
+            normalize_agent_path(cwd, raw),
+            "app/code/Vendor/Module/Plugin/Foo.php",
+        )
+
+    def test_normalize_file_changes_accepts_docker_absolute_path(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Vendor/Module/Test/Unit/Model/FooTest.php"
+            files = normalize_file_changes(cwd, [{
+                "path": f"/var/www/html/{rel}",
+                "action": "modify",
+                "content": "<?php\nclass FooTest {}\n",
+            }])
+            self.assertEqual(files[0]["path"], rel)
+            self.assertEqual(files[0]["action"], "create")
+
     def test_modify_on_missing_file_becomes_create_with_content(self):
         with tempfile.TemporaryDirectory() as cwd:
             rel = "app/code/Vendor/Module/Test/Unit/Model/FooTest.php"

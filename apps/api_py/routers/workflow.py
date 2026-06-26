@@ -41,8 +41,11 @@ from services.deploy_error_service import (
     analyze_deploy_failure,
     build_auto_fix_proposals,
     build_php_syntax_auto_fix,
+    enrich_deploy_fix_analysis,
     enrich_deploy_report,
     gather_deploy_fix_excerpts,
+    merge_deploy_analysis,
+    sanitize_deploy_fix_files,
 )
 from services.test_error_service import (
     analyze_test_failure,
@@ -83,6 +86,10 @@ class PostJiraCommentBody(BaseModel):
 
 class CommitBody(BaseModel):
     message: str
+
+
+class DeployFixBody(BaseModel):
+    instructions: Optional[str] = None
 
 
 class BulkDeleteBody(BaseModel):
@@ -178,6 +185,8 @@ async def _build_deploy_fix_context(
     resolved: dict,
     deploy: dict | None,
     analysis: dict,
+    *,
+    fix_instructions: str | None = None,
 ) -> dict:
     """Slim AI context for deploy-fix — avoids blowing the model context window."""
     jira = _jira_for_run(run, detail)
@@ -212,6 +221,7 @@ async def _build_deploy_fix_context(
         "phpBin": resolved["env"].get("phpBin") or "php",
         "dockerComposePath": resolved["env"].get("dockerComposePath"),
         "deployLastFix": (deploy or {}).get("lastFix"),
+        "deployFixInstructions": (fix_instructions or "").strip() or None,
     }
 
 
@@ -823,17 +833,21 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
 
 
 @router.post("/runs/{run_id}/deploy-fix")
-async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
+async def deploy_fix(run_id: str, body: DeployFixBody = DeployFixBody(), auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     _assert_project_access(auth, run["projectId"], write=True)
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
-    if wf["currentStep"] != "deploy":
+    if wf["currentStep"] not in ("deploy", "commit"):
         raise HttpError.bad_request("Deploy fix is only available on the deploy step")
 
     deploy = detail.get("deploy")
     if deploy and deploy.get("running"):
-        raise HttpError.bad_request("Deploy is still running")
+        active_task = _deploy_tasks.get(run_id)
+        if active_task and not active_task.done():
+            raise HttpError.bad_request("Deploy is still running")
+        deploy = {**deploy, "running": False}
+        patch_detail(run_id, {"deploy": deploy})
     if deploy and deploy.get("ok"):
         raise HttpError.bad_request("Deploy already succeeded")
 
@@ -841,8 +855,8 @@ async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
     cwd = resolved["cwd"]
     php_bin = resolved["env"].get("phpBin") or "php"
     docker_compose_path = resolved["env"].get("dockerComposePath")
-    analysis = analyze_deploy_failure(deploy, cwd)
-    if not analysis.get("rawOutput"):
+    analysis = enrich_deploy_fix_analysis(merge_deploy_analysis(deploy, cwd), detail, cwd)
+    if not (analysis.get("rawOutput") or analysis.get("issues")):
         raise HttpError.bad_request("No deploy error output available to fix.")
 
     last_fix = (deploy or {}).get("lastFix")
@@ -857,12 +871,24 @@ async def deploy_fix(run_id: str, auth: dict = Depends(get_auth)):
     else:
         fix_mode = "ai"
         provider = _pick_provider(run.get("provider"))
-        ctx = await _build_deploy_fix_context(run, detail, resolved, deploy, analysis)
+        fix_instructions = (body.instructions or "").strip() or None
+        ctx = await _build_deploy_fix_context(
+            run, detail, resolved, deploy, analysis, fix_instructions=fix_instructions,
+        )
         ai_result = await run_ai(provider, run.get("model"), ctx)
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
 
-    files = output.get("files") or []
+    files = sanitize_deploy_fix_files(cwd, analysis, output.get("files") or [])
+    if not files and output.get("files"):
+        raise HttpError(
+            422,
+            "AI proposed fixes only for generated/vendor files. "
+            "Edit app/code plugin or DI configuration instead — redeploy after fixing the source.",
+            "deploy_fix_generated_only",
+        )
+    output = {**output, "files": files}
+
     if not files:
         auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
         if auto_output:

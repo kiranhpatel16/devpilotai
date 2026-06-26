@@ -118,7 +118,7 @@ def _build_resolved_creds(
 
 
 def validate_endpoint_models(provider_id: str, creds: dict, setting: dict | None) -> None:
-    """Warn when custom models are sent to a built-in provider's default API host."""
+    """Warn when a model looks incompatible with a built-in provider's default API host."""
     if provider_id not in PROVIDER_CATALOG:
         return
     entry = _catalog_entry(provider_id)
@@ -133,12 +133,14 @@ def validate_endpoint_models(provider_id: str, creds: dict, setting: dict | None
     if active_base != native_base.rstrip("/"):
         return
 
-    catalog_models = set(PROVIDER_CATALOG[provider_id]["models"])
-    effective = _effective_models(provider_id, entry, setting)
-    if all(m in catalog_models for m in effective):
+    # Admin customized the model list — let the live API verify the chosen model.
+    if setting and isinstance(setting.get("extra", {}).get("models"), list) and setting["extra"]["models"]:
         return
 
+    catalog_models = set(PROVIDER_CATALOG[provider_id]["models"])
     model = creds.get("defaultModel") or entry["defaultModel"]
+    if model in catalog_models:
+        return
     hints = {
         "grok": (
             "These models look like Groq/Llama IDs. Set Base URL to "

@@ -254,7 +254,7 @@ export function WorkflowStepContent({
     }
   }
 
-  async function runDeployFix() {
+  async function runDeployFix(instructions?: string) {
     if (pipelineRunningRef.current) return;
     pipelineRunningRef.current = true;
     setPipelineRunning(true);
@@ -268,7 +268,8 @@ export function WorkflowStepContent({
       const result = (
         await api.post<{ detail: RunDetail; fix: { summary: string } }>(
           `/workflow/runs/${run.id}/deploy-fix`,
-          {},
+          { instructions: instructions?.trim() || null },
+          longRequest,
         )
       ).data;
       onChange(result.detail);
@@ -797,7 +798,7 @@ export function WorkflowStepContent({
             applying={deployApplying}
             onClose={closeDeployModal}
             onRetry={() => void runDeployPipeline()}
-            onProposeFix={() => void runDeployFix()}
+            onProposeFix={(instructions) => void runDeployFix(instructions)}
             onApplyFix={(paths) => void applyDeployFix(paths)}
             onRedeploy={() => void redeployAfterFix()}
           />

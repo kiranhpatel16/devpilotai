@@ -48,8 +48,8 @@ function AnalysisPanel({ analysis, lastFixFailed }: { analysis: DeployFailureAna
         </ul>
       )}
       <p className="mt-2 text-xs text-blue-700">
-        Click <strong>AI fix error</strong> to generate a proposed fix. Review the diff, apply when
-        ready, then redeploy.
+        Click <strong>AI fix error</strong>, add any context about the failure, then send to generate a
+        proposed fix. Review the diff, apply when ready, then redeploy.
       </p>
     </div>
   );
@@ -76,11 +76,13 @@ export function DeployProgressModal({
   applying?: boolean;
   onClose: () => void;
   onRetry?: () => void;
-  onProposeFix?: () => void;
+  onProposeFix?: (instructions?: string) => void;
   onApplyFix?: (paths: string[]) => void;
   onRedeploy?: () => void;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const [showFixPrompt, setShowFixPrompt] = useState(false);
+  const [fixInstructions, setFixInstructions] = useState('');
 
   const deploy = detail.deploy as TestReport | null;
   const hasFixProposal = !detail.applied && (detail.diffs?.length ?? 0) > 0;
@@ -90,6 +92,29 @@ export function DeployProgressModal({
     const bad = new Set(detail.diffs.filter((d) => d.error).map((d) => d.path));
     setSelected(detail.diffs.map((d) => d.path).filter((p) => !bad.has(p)));
   }, [detail.diffs, detail.output?.summary]);
+
+  useEffect(() => {
+    if (!open) {
+      setShowFixPrompt(false);
+      setFixInstructions('');
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (phase === 'fixing') {
+      setShowFixPrompt(false);
+    }
+  }, [phase]);
+
+  function openFixPrompt() {
+    setShowFixPrompt(true);
+    setFixInstructions('');
+  }
+
+  function submitFixPrompt() {
+    setShowFixPrompt(false);
+    onProposeFix?.(fixInstructions.trim() || undefined);
+  }
 
   if (!open) return null;
 
@@ -218,6 +243,25 @@ export function DeployProgressModal({
             <AnalysisPanel analysis={analysis} lastFixFailed={lastFixFailed} />
           )}
 
+          {showFixPrompt && !fixing && (
+            <div className="space-y-3 rounded-md border border-brand-500/30 bg-brand-500/5 p-3">
+              <div>
+                <p className={`text-sm font-medium ${taskTitle}`}>Describe the issue (optional)</p>
+                <p className={`mt-1 text-xs ${taskMuted}`}>
+                  Add context for the AI agent — suspected file, plugin name, what changed, or how
+                  you want it fixed. Leave blank to let the agent analyze the deploy output only.
+                </p>
+              </div>
+              <textarea
+                className={`min-h-[120px] w-full resize-y rounded-md border border-slate-600/60 bg-slate-900/40 px-3 py-2 text-sm ${taskBody} placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500`}
+                placeholder="e.g. The Belvg POboxes plugin may be calling parent:: in a class without a parent. Check app/code/Belvg/POboxes/Plugin/…"
+                value={fixInstructions}
+                onChange={(e) => setFixInstructions(e.target.value)}
+                disabled={fixing}
+              />
+            </div>
+          )}
+
           {showReview && (
             <div className="space-y-3 rounded-md border border-blue-200 bg-blue-50 p-3">
               <div>
@@ -295,14 +339,14 @@ export function DeployProgressModal({
             </p>
           )}
 
-          {showReview && !deployRunning && (
+          {showReview && !deployRunning && !showFixPrompt && (
             <>
               {onProposeFix && !detail.applied && (
                 <button
                   type="button"
                   className="btn-secondary"
                   disabled={applying || fixing}
-                  onClick={onProposeFix}
+                  onClick={openFixPrompt}
                 >
                   {fixing ? 'Regenerating…' : 'Regenerate fix'}
                 </button>
@@ -333,7 +377,27 @@ export function DeployProgressModal({
             </>
           )}
 
-          {failed && !deployRunning && !showReview && (
+          {showFixPrompt && !fixing && (
+            <>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowFixPrompt(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!onProposeFix}
+                onClick={submitFixPrompt}
+              >
+                Start AI fix
+              </button>
+            </>
+          )}
+
+          {failed && !deployRunning && !showReview && !showFixPrompt && (
             <>
               {onRetry && (
                 <button type="button" className="btn-secondary" onClick={onRetry}>
@@ -345,9 +409,9 @@ export function DeployProgressModal({
                   type="button"
                   className="btn-primary"
                   disabled={fixing}
-                  onClick={onProposeFix}
+                  onClick={openFixPrompt}
                 >
-                  {fixing ? 'Generating fix…' : 'AI fix error'}
+                  AI fix error
                 </button>
               )}
               <button type="button" className="btn-secondary" onClick={onClose}>
@@ -356,7 +420,7 @@ export function DeployProgressModal({
             </>
           )}
 
-          {phase === 'done' && (
+          {phase === 'done' && !showFixPrompt && (
             <button type="button" className="btn-primary" onClick={onClose}>
               Continue
             </button>

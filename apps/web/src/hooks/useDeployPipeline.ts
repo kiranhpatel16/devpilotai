@@ -78,7 +78,7 @@ export function useDeployPipeline(detail: RunDetail, onChange: (d: RunDetail) =>
     }
   }
 
-  async function runDeployFix() {
+  async function runDeployFix(instructions?: string) {
     if (pipelineRunningRef.current) return;
     pipelineRunningRef.current = true;
     setPipelineRunning(true);
@@ -91,7 +91,8 @@ export function useDeployPipeline(detail: RunDetail, onChange: (d: RunDetail) =>
       const result = (
         await api.post<{ detail: RunDetail; fix: { summary: string } }>(
           `/workflow/runs/${runId}/deploy-fix`,
-          {},
+          { instructions: instructions?.trim() || null },
+          longRequest,
         )
       ).data;
       onChange(result.detail);

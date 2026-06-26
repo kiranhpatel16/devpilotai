@@ -306,7 +306,7 @@ export function TestsStepPanel({
         applying={deployApplying}
         onClose={closeDeployModal}
         onRetry={() => void runDeployPipeline()}
-        onProposeFix={() => void runDeployFix()}
+        onProposeFix={(instructions) => void runDeployFix(instructions)}
         onApplyFix={(paths) => void applyDeployFix(paths)}
         onRedeploy={() => void redeployAfterFix()}
       />

@@ -10,7 +10,24 @@ except ImportError:
     GIT_AVAILABLE = False
 
 
+def normalize_agent_path(cwd: str, path: str) -> str | None:
+    """Map docker absolute paths (e.g. /var/www/html/...) to project-relative paths."""
+    if not path:
+        return None
+    normalized = path.replace("\\", "/").strip()
+    cwd_norm = os.path.normpath(cwd).replace("\\", "/").rstrip("/")
+    if normalized.startswith(cwd_norm + "/"):
+        return normalized[len(cwd_norm) + 1 :]
+    docker_root = "/var/www/html"
+    if normalized.startswith(docker_root + "/"):
+        return normalized[len(docker_root) + 1 :]
+    if normalized.startswith("/"):
+        return None
+    return normalized.lstrip("./")
+
+
 def _safe_join(cwd: str, rel_path: str) -> str:
+    rel_path = normalize_agent_path(cwd, rel_path) or rel_path
     if not rel_path or os.path.isabs(rel_path):
         raise HttpError.bad_request(f"Unsafe file path: {rel_path}")
     root = os.path.realpath(cwd)
@@ -94,9 +111,11 @@ def normalize_file_changes(cwd: str, files: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for change in files:
         action = change.get("action", "modify")
-        path = change.get("path") or ""
+        raw_path = change.get("path") or ""
+        path = normalize_agent_path(cwd, raw_path)
         if not path:
             continue
+        change = {**change, "path": path}
         if action != "modify":
             normalized.append(change)
             continue
