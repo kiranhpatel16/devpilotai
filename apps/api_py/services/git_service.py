@@ -242,6 +242,191 @@ def compute_diffs(cwd: str, files: list[dict]) -> list[dict]:
     return diffs
 
 
+def _resolve_base_ref(repo, base_branch: str) -> str:
+    for ref in (f"origin/{base_branch}", base_branch):
+        try:
+            repo.git.rev_parse("--verify", ref)
+            return ref
+        except Exception:
+            pass
+    return base_branch
+
+
+def _parse_name_status(output: str) -> list[dict]:
+    files: list[dict] = []
+    for line in (output or "").strip().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        if status.startswith("R") or status.startswith("C"):
+            path = parts[2] if len(parts) > 2 else parts[1]
+            action = "create" if status.startswith("C") else "modify"
+        elif status == "A":
+            path, action = parts[1], "create"
+        elif status == "D":
+            path, action = parts[1], "delete"
+        else:
+            path, action = parts[1], "modify"
+        files.append({"path": path, "action": action})
+    return files
+
+
+def _count_patch_stats(patch: str) -> tuple[int, int]:
+    added = sum(1 for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in patch.splitlines() if line.startswith("-") and not line.startswith("---"))
+    return added, removed
+
+
+def list_branch_file_changes(
+    cwd: str,
+    base_branch: str,
+    branch: str | None = None,
+    *,
+    include_working_tree: bool = False,
+) -> list[dict]:
+    """Files on branch vs merge-base of base_branch (matches PR file list)."""
+    if not GIT_AVAILABLE:
+        return []
+    try:
+        repo = gitlib.Repo(cwd)
+        base_ref = _resolve_base_ref(repo, base_branch)
+        head = branch or repo.active_branch.name
+        merged: dict[str, dict] = {}
+
+        for item in _parse_name_status(repo.git.diff("--name-status", f"{base_ref}...{head}")):
+            merged[item["path"]] = item
+
+        if include_working_tree:
+            for item in _parse_name_status(repo.git.diff("--name-status", "HEAD")):
+                merged[item["path"]] = item
+            for path in repo.untracked_files:
+                merged[path] = {"path": path, "action": "create"}
+
+        return sorted(merged.values(), key=lambda f: f["path"].lower())
+    except Exception:
+        return []
+
+
+def compute_git_diffs(
+    cwd: str,
+    base_branch: str,
+    branch: str | None,
+    files: list[dict],
+    *,
+    include_working_tree: bool = False,
+) -> list[dict]:
+    """Unified diffs from git for branch file changes (for PR / post-commit display)."""
+    if not GIT_AVAILABLE or not files:
+        return []
+    try:
+        repo = gitlib.Repo(cwd)
+        base_ref = _resolve_base_ref(repo, base_branch)
+        head = branch or repo.active_branch.name
+        diffs = []
+        for f in files:
+            path = f["path"]
+            try:
+                if include_working_tree:
+                    patch = repo.git.diff("HEAD", "--", path)
+                    if not patch and f.get("action") == "create":
+                        full = _safe_join(cwd, path)
+                        if os.path.isfile(full):
+                            import difflib
+                            content = _read_if_exists(full)
+                            patch = "".join(difflib.unified_diff(
+                                [],
+                                content.splitlines(keepends=True),
+                                fromfile=f"a/{path}",
+                                tofile=f"b/{path}",
+                            ))
+                else:
+                    patch = repo.git.diff(f"{base_ref}...{head}", "--", path)
+            except Exception as err:
+                diffs.append({
+                    "path": path,
+                    "action": f.get("action", "modify"),
+                    "reason": f.get("reason"),
+                    "patch": "",
+                    "added": 0,
+                    "removed": 0,
+                    "error": str(err),
+                })
+                continue
+            added, removed = _count_patch_stats(patch or "")
+            diffs.append({
+                "path": path,
+                "action": f.get("action", "modify"),
+                "reason": f.get("reason"),
+                "patch": patch or "",
+                "added": added,
+                "removed": removed,
+                "error": None,
+            })
+        return diffs
+    except Exception:
+        return []
+
+
+def enrich_detail_files_from_git(
+    run: dict,
+    detail: dict,
+    cwd: str,
+    git_cfg: dict,
+) -> dict:
+    """Replace output.files / diffs with git branch truth after apply or commit."""
+    git_info = detail.get("git") or {}
+    if not run.get("branchName"):
+        return detail
+    if not detail.get("applied") and not git_info.get("committed"):
+        return detail
+
+    base_branch = (
+        git_cfg.get("prTargetBranch")
+        or git_cfg.get("stagingBranch")
+        or git_cfg.get("productionBranch")
+        or "main"
+    )
+    include_wt = bool(detail.get("applied") and not git_info.get("committed"))
+    branch_files = list_branch_file_changes(
+        cwd,
+        base_branch,
+        run["branchName"],
+        include_working_tree=include_wt,
+    )
+    if not branch_files:
+        return detail
+
+    output = dict(detail.get("output") or {})
+    reason_by_path = {
+        f["path"]: f.get("reason")
+        for f in (output.get("files") or [])
+        if isinstance(f, dict) and f.get("path")
+    }
+    files = [
+        {
+            "path": bf["path"],
+            "action": bf["action"],
+            "reason": reason_by_path.get(bf["path"]),
+        }
+        for bf in branch_files
+    ]
+    diffs = compute_git_diffs(
+        cwd,
+        base_branch,
+        run["branchName"],
+        files,
+        include_working_tree=include_wt,
+    )
+    return {
+        **detail,
+        "output": {**output, "files": files},
+        "diffs": diffs,
+    }
+
+
 def capture_backups(cwd: str, files: list[dict], selected_paths: list[str] | None = None) -> list[dict]:
     backups = []
     for f in files:

@@ -72,7 +72,7 @@ export interface ProjectGitConfig {
   repoOwner: string | null;
   /** Repository slug */
   repoName: string | null;
-  /** Bitbucket username for app password auth */
+  /** Bitbucket username (app password) or Atlassian email (API token) */
   apiUsername: string | null;
 }
 

@@ -301,6 +301,7 @@ export function WorkspaceSettingsPanel({
           repoOwner: form.repoOwner || null,
           repoName: form.repoName || null,
           apiUsername: form.gitApiUsername || null,
+          jiraEmail: form.jiraEmail || null,
           ...(form.gitApiToken ? { apiToken: form.gitApiToken } : {}),
         })
       ).data,
@@ -661,25 +662,29 @@ export function WorkspaceSettingsPanel({
               />
             </Field>
 
-            <Field label="Git API Username (Bitbucket)">
+            <Field label="Git API username (Bitbucket)">
               <input
                 className="input"
+                placeholder="Bitbucket username, or Atlassian email for API tokens"
                 value={form.gitApiUsername}
                 readOnly={readOnly}
                 onChange={(e) => patch('gitApiUsername', e.target.value)}
               />
             </Field>
 
-            <Field label="App Password / Token">
+            <Field label="Git API token">
               <PasswordInput
                 value={form.gitApiToken}
                 placeholder={
                   hasGitToken
                     ? '•••••• (leave blank to keep)'
-                    : 'Paste Bitbucket App Password or GitHub PAT'
+                    : 'Paste Bitbucket API token or GitHub PAT'
                 }
                 onChange={(v) => patch('gitApiToken', v)}
               />
+              <p className="mt-1 text-xs text-slate-400">
+                Bitbucket: API token with Repository Read + Pull requests Write (uses Jira email for auth).
+              </p>
               {readOnly && (
                 <p className="mt-1 text-xs text-slate-400">Contact an admin to update Git tokens.</p>
               )}

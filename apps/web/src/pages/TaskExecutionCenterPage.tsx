@@ -17,7 +17,6 @@ import { WorkflowBusyProvider, useWorkflowBusy } from '../context/WorkflowBusyCo
 import { TaskHistoryGrid } from '../components/task-workflow/TaskHistoryGrid';
 import { TaskActionBar } from '../components/execution-center/TaskActionBar';
 import { AgentStatusBanner } from '../components/execution-center/AgentStatusBanner';
-import { LiveChatDrawer } from '../components/execution-center/LiveChatDrawer';
 import { StepContentRouter } from '../components/execution-center/StepContentRouter';
 import {
   WorkflowTabs,
@@ -484,7 +483,6 @@ function TaskExecutionCenterPageInner() {
         )}
       </section>
 
-      <LiveChatDrawer projectId={projectId} />
     </div>
   );
 }

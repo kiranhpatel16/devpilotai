@@ -249,6 +249,7 @@ class GitTestBody(BaseModel):
     repoName: Optional[str] = None
     apiUsername: Optional[str] = None
     apiToken: Optional[str] = None
+    jiraEmail: Optional[str] = None
 
 
 @router.post("/{project_id}/git/test")
