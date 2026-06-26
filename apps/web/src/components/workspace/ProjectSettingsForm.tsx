@@ -142,6 +142,7 @@ export function ProjectSettingsForm({
           repoOwner: form.repoOwner || null,
           repoName: form.repoName || null,
           apiUsername: form.gitApiUsername || null,
+          jiraEmail: form.jiraEmail || null,
           ...(form.gitApiToken ? { apiToken: form.gitApiToken } : {}),
         })
       ).data,
@@ -401,19 +402,19 @@ export function ProjectSettingsForm({
         <SettingsField label="Git API username (Bitbucket)">
           <input
             className="input"
-            placeholder="Bitbucket username"
+            placeholder="Bitbucket username, or Atlassian email for API tokens"
             value={form.gitApiUsername}
             onChange={(e) => set('gitApiUsername', e.target.value)}
           />
         </SettingsField>
-        <SettingsField label="Git API token / App Password">
+        <SettingsField label="Git API token">
           <input
             className="input"
             type="password"
             placeholder={
               tokenFlags.hasGitToken
                 ? '•••••• (leave blank to keep saved token)'
-                : 'Paste Bitbucket App Password (required)'
+                : 'Paste Bitbucket API token (required)'
             }
             value={form.gitApiToken}
             onChange={(e) => set('gitApiToken', e.target.value)}
@@ -424,7 +425,8 @@ export function ProjectSettingsForm({
             </p>
           )}
           <p className="mt-1 text-xs text-slate-400">
-            Bitbucket: App Password with Pull requests write. GitHub: PAT with repo scope.
+            Bitbucket: API token with Repository Read + Pull requests Write (use Jira email for auth).
+            GitHub: PAT with repo scope.
           </p>
         </SettingsField>
         <SettingsField label="Jira base URL">

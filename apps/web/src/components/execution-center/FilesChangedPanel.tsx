@@ -67,7 +67,9 @@ export function FilesChangedPanel({
     return (
       <div className={taskPanel}>
         <header className={taskPanelHeader}>
-          <h3 className={taskTitle}>Files Changed ({files.length})</h3>
+          <h3 className={taskTitle}>
+            {title ?? 'Files Changed'} ({files.length})
+          </h3>
         </header>
         <ul className="max-h-48 overflow-y-auto p-2">
           {files.map((f) => {

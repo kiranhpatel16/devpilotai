@@ -17,7 +17,7 @@ from services.ai_service import run_ai
 from services.repo_context import enrich_repo_context
 from services.git_service import (
     apply_changes, capture_backups, commit_all, compute_diffs,
-    create_branch, get_status, push_branch, revert_changes,
+    create_branch, enrich_detail_files_from_git, get_status, push_branch, revert_changes,
     merge_refined_files, repair_file_changes,
 )
 from services.pr_service import create_pull_request
@@ -86,6 +86,14 @@ def _load_owned_run(run_id: str, auth: dict) -> dict:
 def _assemble_detail(run_id: str) -> dict:
     run = runs_repo.find_by_id(run_id)
     detail = load_detail(run_id)
+    if run and run.get("branchName"):
+        try:
+            resolved = resolve_environment(run["userId"], run["projectId"])
+            detail = enrich_detail_files_from_git(
+                run, detail, resolved["cwd"], resolved["project"]["git"],
+            )
+        except Exception:
+            pass
     wf = None
     if run and run.get("mode") == "workflow":
         from services.workflow import extract_workflow

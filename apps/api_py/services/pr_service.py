@@ -1,4 +1,4 @@
-import base64
+import json
 import re
 import subprocess
 import httpx
@@ -41,6 +41,41 @@ def _detect_remote_repo(cwd: str, remote_name: str = "origin") -> dict | None:
         return None
 
 
+def _is_bitbucket_api_token(token: str) -> bool:
+    """Bitbucket Cloud API tokens (replacing app passwords) start with ATATT."""
+    return token.startswith("ATATT")
+
+
+def _bitbucket_basic_auth(
+    username: str | None,
+    token: str,
+    atlassian_email: str | None,
+) -> tuple[str, str]:
+    """Return (basic-auth user, token) for Bitbucket REST API calls."""
+    if _is_bitbucket_api_token(token):
+        email = None
+        if username and "@" in username:
+            email = username.strip()
+        elif atlassian_email:
+            email = atlassian_email.strip()
+        if not email:
+            raise HttpError(
+                409,
+                "Bitbucket API tokens require your Atlassian account email. "
+                "Set Jira email in project settings, or enter your email in the Git API username field.",
+                "pr_email_missing",
+            )
+        return (email, token)
+
+    if not username:
+        raise HttpError(
+            409,
+            "Bitbucket App Passwords require your Bitbucket username (not email) in project settings.",
+            "pr_username_missing",
+        )
+    return (username, token)
+
+
 def resolve_pr_config(project_id: str, cwd: str, overrides: dict | None = None) -> dict:
     project = projects_repo.find_by_id(project_id)
     if not project:
@@ -54,6 +89,13 @@ def resolve_pr_config(project_id: str, cwd: str, overrides: dict | None = None) 
         token = overrides["apiToken"]
 
     username = (overrides.get("apiUsername") or git_cfg.get("apiUsername") or "").strip() or None
+    jira_cfg = project.get("jira") or {}
+    atlassian_email = (
+        overrides.get("atlassianEmail")
+        or overrides.get("jiraEmail")
+        or jira_cfg.get("email")
+        or ""
+    ).strip() or None
 
     provider = (overrides.get("prProvider") or git_cfg.get("prProvider") or "").strip().lower() or None
     owner = (overrides.get("repoOwner") or git_cfg.get("repoOwner") or "").strip() or None
@@ -80,20 +122,20 @@ def resolve_pr_config(project_id: str, cwd: str, overrides: dict | None = None) 
         raise HttpError.bad_request(f"Unsupported PR provider: {provider}")
 
     if not token:
-        label = "App Password" if provider == "bitbucket" else "Personal Access Token"
+        if provider == "bitbucket":
+            label = "API token" if username and "@" in username else "API token or App Password"
+        else:
+            label = "Personal Access Token"
         raise HttpError(
             409,
-            f"No {label} saved. Paste your Bitbucket App Password and click Save, then Test Git / PR.",
+            f"No {label} saved. Paste your Bitbucket credentials and click Save, then Test Git / PR.",
             "pr_token_missing",
             {"provider": provider},
         )
 
-    if provider == "bitbucket" and not username:
-        raise HttpError(
-            409,
-            "Bitbucket requires your Bitbucket username (not email) in project settings.",
-            "pr_username_missing",
-        )
+    bitbucket_auth = None
+    if provider == "bitbucket":
+        bitbucket_auth = _bitbucket_basic_auth(username, token, atlassian_email)
 
     return {
         "provider": provider,
@@ -101,14 +143,33 @@ def resolve_pr_config(project_id: str, cwd: str, overrides: dict | None = None) 
         "name": name,
         "token": token,
         "username": username,
+        "bitbucketAuth": bitbucket_auth,
     }
 
 
 def _bitbucket_auth_error(status: int, body: str) -> HttpError:
+    api_message = ""
+    try:
+        api_message = (json.loads(body).get("error") or {}).get("message") or ""
+    except Exception:
+        pass
+
+    if api_message and "no Bitbucket scopes" in api_message:
+        return HttpError(
+            502,
+            "Bitbucket API token has no Bitbucket permissions. "
+            "Create a token at id.atlassian.com/manage-profile/security/api-tokens "
+            "with Repository: Read and Pull requests: Write scopes (not a Jira-only token).",
+            "pr_auth_failed",
+            {"body": body[:300]},
+        )
+
     if status == 401:
         return HttpError(
             502,
-            "Bitbucket authentication failed. Use your Bitbucket username (not email) and an App Password — not your login password.",
+            "Bitbucket authentication failed. "
+            "For API tokens (ATATT…): use your Atlassian account email and a Bitbucket-scoped API token. "
+            "For legacy App Passwords: use your Bitbucket username and App Password.",
             "pr_auth_failed",
             {"body": body[:300]},
         )
@@ -133,7 +194,7 @@ async def test_git_connection(project_id: str, cwd: str | None = None, overrides
     cfg = resolve_pr_config(project_id, cwd or ".", overrides)
     if cfg["provider"] == "bitbucket":
         url = f"https://api.bitbucket.org/2.0/repositories/{cfg['owner']}/{cfg['name']}"
-        auth = (cfg["username"], cfg["token"])
+        auth = cfg["bitbucketAuth"]
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, auth=auth)
         if not resp.is_success:
@@ -171,7 +232,7 @@ async def _create_bitbucket_pr(cfg: dict, base: str, head: str, title: str, body
         "destination": {"branch": {"name": base}},
         "close_source_branch": False,
     }
-    auth = (cfg["username"], cfg["token"])
+    auth = cfg["bitbucketAuth"]
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, json=payload, auth=auth)
     if resp.status_code in (401, 403):

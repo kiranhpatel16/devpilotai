@@ -276,8 +276,10 @@ async def run_visual_smoke(
 
     primary_error = storefront_errors[0] if storefront_errors else None
     output_text = "\n".join(lines)[-4000:]
-    if primary_error and primary_error not in output_text:
-        output_text = (_format_storefront_error(primary_error) + "\n\n" + output_text)[-4000:]
+    if primary_error:
+        formatted_error = _format_storefront_error(primary_error)
+        if formatted_error and formatted_error not in output_text:
+            output_text = (formatted_error + "\n\n" + output_text)[-4000:]
 
     step: dict = {
         "key": "visual_smoke",
