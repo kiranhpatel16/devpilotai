@@ -5,12 +5,13 @@ from db.custom_ai_providers import custom_ai_providers_repo
 from services.ai_providers.catalog import PROVIDER_CATALOG, PROVIDER_IDS
 from services.ai_providers.openai_compatible import make_openai_compatible_adapter
 from services.ai_providers.gemini import gemini_adapter
+from services.ai_providers.cursor import cursor_adapter
 
 ADAPTERS = {
     "openai": make_openai_compatible_adapter("openai", PROVIDER_CATALOG["openai"]["defaultBaseUrl"]),
     "grok": make_openai_compatible_adapter("grok", PROVIDER_CATALOG["grok"]["defaultBaseUrl"]),
     "cloud_ai": gemini_adapter,
-    # cursor: not wired in this build
+    "cursor": cursor_adapter,
 }
 
 
@@ -27,7 +28,7 @@ def get_adapter(provider_id: str) -> dict:
         adapter = _custom_adapter(provider_id)
     if not adapter:
         raise HttpError.bad_request(
-            f'Provider "{provider_id}" is not available in this build. Use openai, grok, or cloud_ai.',
+            f'Provider "{provider_id}" is not available in this build. Use openai, grok, cloud_ai, or cursor.',
             "provider_unavailable",
         )
     return adapter

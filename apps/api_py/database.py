@@ -205,6 +205,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE projects ADD COLUMN deploy_skip_composer INTEGER NOT NULL DEFAULT 0"
         )
+    if "llm_config_json" not in proj_cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN llm_config_json TEXT")
     conn.commit()
 
 

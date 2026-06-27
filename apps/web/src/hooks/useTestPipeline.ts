@@ -52,7 +52,10 @@ export function useTestPipeline(detail: RunDetail, onChange: (d: RunDetail) => v
   const runFixCycle = useCallback(async (): Promise<RunDetail | null> => {
     try {
       const fixDetail = await runTestFix();
-      const paths = fixDetail.diffs?.map((d) => d.path) ?? [];
+      const paths =
+        fixDetail.diffs?.map((d) => d.path) ??
+        fixDetail.output?.files?.map((f) => f.path) ??
+        [];
       if (!paths.length) {
         setPipelineError('AI agent did not propose any file changes.');
         return null;

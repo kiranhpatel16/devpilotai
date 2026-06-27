@@ -72,8 +72,12 @@ def make_openai_compatible_adapter(provider_id: str, fallback_base_url: str):
                 {"role": "system", "content": req["system"]},
                 {"role": "user", "content": req["user"]},
             ],
-            "temperature": 0.2,
+            "temperature": req.get("temperature") if req.get("temperature") is not None else 0.2,
         }
+        if req.get("maxTokens") is not None:
+            body["max_tokens"] = req["maxTokens"]
+        if req.get("topP") is not None:
+            body["top_p"] = req["topP"]
         if req.get("jsonMode"):
             body["response_format"] = {"type": "json_object"}
 
@@ -105,11 +109,14 @@ def make_openai_compatible_adapter(provider_id: str, fallback_base_url: str):
                             {"body": resp.text[:600]})
 
         data = resp.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+        choice = data.get("choices", [{}])[0]
+        content = choice.get("message", {}).get("content", "") or ""
+        finish_reason = choice.get("finish_reason")
         return {
             "content": content,
             "inputTokens": data.get("usage", {}).get("prompt_tokens"),
             "outputTokens": data.get("usage", {}).get("completion_tokens"),
+            "finishReason": finish_reason,
         }
 
     async def verify(creds: dict) -> None:

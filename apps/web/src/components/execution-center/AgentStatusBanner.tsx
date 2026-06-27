@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Activity, RunDetail } from '@cpwork/shared';
 import { api } from '../../lib/api';
@@ -9,9 +10,10 @@ interface AgentStatusBannerProps {
   detail: RunDetail | null;
   runId: string | null;
   polling: boolean;
+  onDetailUpdate?: (detail: RunDetail) => void;
 }
 
-export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerProps) {
+export function AgentStatusBanner({ detail, runId, polling, onDetailUpdate }: AgentStatusBannerProps) {
   const pollQ = useQuery({
     queryKey: ['workflow-run-poll', runId],
     queryFn: async () =>
@@ -33,6 +35,11 @@ export function AgentStatusBanner({ detail, runId, polling }: AgentStatusBannerP
 
   const activeDetail = pollQ.data ?? detail;
   const lastActivity = activitiesQ.data?.[0];
+
+  useEffect(() => {
+    if (pollQ.data) onDetailUpdate?.(pollQ.data);
+  }, [pollQ.data, onDetailUpdate]);
+
   const status = getWorkflowAgentStatus(activeDetail, lastActivity);
   if (!status) return null;
 

@@ -12,25 +12,34 @@ import {
 } from '../execution-center/WorkflowTabs';
 
 const WORKFLOW_COLUMNS: { id: WorkflowTab; label: string }[] = [
-  { id: 'requirements', label: 'Requirements' },
-  { id: 'plan', label: 'Plan' },
+  { id: 'requirements', label: 'Analysis' },
+  { id: 'setup', label: 'Setup' },
+  { id: 'plan', label: 'Plan & Approval' },
   { id: 'code', label: 'Code' },
   { id: 'review', label: 'Review' },
-  { id: 'tests', label: 'Tests' },
+  { id: 'build', label: 'Build' },
   { id: 'pr', label: 'PR' },
-  { id: 'deploy', label: 'Deploy' },
+  { id: 'qa', label: 'QA' },
+  { id: 'done', label: 'Done' },
 ];
 
-const STEP_LABELS: Record<TaskWorkflowStep, string> = {
+const STEP_LABELS: Partial<Record<TaskWorkflowStep, string>> = {
   select: 'Select',
+  requirement_analysis: 'Analysis',
+  environment_setup: 'Setup',
+  architecture_design: 'Architecture',
+  development_plan: 'Plan',
+  test_cases: 'Test cases',
+  pre_dev_approval: 'Approval',
   branch: 'Branch',
   describe: 'Describe',
   plan: 'Plan',
   review_plan: 'Review plan',
   agent: 'Code',
   code_review: 'Code review',
-  deploy: 'Tests',
+  deploy: 'Build',
   commit: 'PR',
+  qa: 'QA',
   jira_comment: 'Jira',
   done: 'Done',
 };
@@ -215,7 +224,7 @@ export function WorkspaceCustomTasksPanel({
                           {customTaskId(task)}
                         </span>
                         <span className={`badge ${stepBadgeColor(task.currentStep)}`}>
-                          {STEP_LABELS[task.currentStep]}
+                          {STEP_LABELS[task.currentStep] ?? task.currentStep.replace(/_/g, ' ')}
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-2 text-sm text-slate-600 dark:text-slate-300">

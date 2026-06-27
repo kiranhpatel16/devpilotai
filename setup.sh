@@ -66,33 +66,22 @@ pip install --quiet -r apps/api_py/requirements.txt
 info "Python dependencies installed."
 
 # ---------------------------------------------------------------------------
-# 4. Node.js check + npm install
+# 4. Node.js check + npm install + Playwright Chromium
 # ---------------------------------------------------------------------------
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version)
   info "Node.js $NODE_VER — OK"
   info "Installing npm dependencies..."
-  npm install --silent
+  npm install
   info "npm dependencies installed."
+  info "Installing Playwright Chromium (visual smoke / QA screenshots)..."
+  npx playwright install chromium
+  info "Playwright Chromium installed."
   info "Building shared package..."
   npm run build:shared --silent
   info "Shared package built."
 else
   warn "node not found — frontend will not be available. Install Node.js >= 20 to run the web UI."
-fi
-
-# ---------------------------------------------------------------------------
-# 4b. Playwright Chromium (visual smoke tests on Tests step)
-# ---------------------------------------------------------------------------
-if command -v npx &>/dev/null; then
-  info "Installing Playwright Chromium for browser screenshots (visual smoke tests)..."
-  if npx playwright install chromium; then
-    info "Playwright Chromium installed."
-  else
-    warn "Playwright install failed — run manually later: npx playwright install chromium"
-  fi
-else
-  warn "npx not found — skip Playwright. Install Node.js, then run: npx playwright install chromium"
 fi
 
 # ---------------------------------------------------------------------------

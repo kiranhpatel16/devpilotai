@@ -120,7 +120,7 @@ export function deployProfileReason(profile: DeployProfile, changedPaths: string
   const files = names.length ? `${names.join(', ')}${suffix}` : 'no file list';
   switch (profile) {
     case 'light':
-      return `Template/layout-only changes (${files}) — cache flush is enough.`;
+      return `Template/layout-only changes (${files}) — cache flush after XML validation.`;
     case 'standard':
       return `PHP or config XML changed (${files}) — DI compile required.`;
     case 'full':

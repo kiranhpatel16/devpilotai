@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 from database import now_iso
@@ -20,6 +21,8 @@ from services.docker_db import (
     docker_exec_shell,
     resolve_php_docker_target,
 )
+from services.layout_xml_validator import is_layout_xml_path, validate_layout_xml_files
+from services.visual_test_service import probe_storefront_health
 
 STEP_TIMEOUT_DEFAULT = 600
 STEP_TIMEOUT_LONG = 1200
@@ -192,6 +195,7 @@ async def run_local_deploy(
     changed_paths: list[str] | None = None,
     project_deploy_mode: str = "auto",
     skip_composer_project: bool = False,
+    frontend_url: str | None = None,
 ) -> dict:
     """Run Magento local deployment inside php-fpm Docker when available."""
     paths = changed_paths or []
@@ -218,6 +222,31 @@ async def run_local_deploy(
         )
 
     await progress(running_step="docker_target")
+
+    layout_paths = [p for p in paths if is_layout_xml_path(p)]
+    if layout_paths:
+        val_ok, val_output = validate_layout_xml_files(cwd, layout_paths)
+        steps.append({
+            "key": "validate_layout_xml",
+            "label": f"Validate layout XML ({len(layout_paths)} file(s))",
+            "ok": val_ok,
+            "skipped": False,
+            "output": val_output,
+        })
+        await progress(running_step="docker_target")
+        if not val_ok:
+            report = _build_report(
+                steps,
+                profile=profile,
+                profile_reason=reason,
+                ok=False,
+                running=False,
+                error="Layout XML validation failed — fix XML before deploy.",
+            )
+            await _emit_progress(
+                steps, on_progress, profile=profile, profile_reason=reason, ok=False, running=False
+            )
+            return report
 
     if runner.uses_docker:
         steps.append({
@@ -398,6 +427,30 @@ async def run_local_deploy(
         "skipped": False,
         "output": r["output"] or "Permissions updated.",
     })
+
+    if frontend_url:
+        await progress(running_step="storefront_probe")
+        probe_ok, probe_output = await asyncio.to_thread(probe_storefront_health, frontend_url)
+        steps.append({
+            "key": "storefront_probe",
+            "label": "Storefront health check",
+            "ok": probe_ok,
+            "skipped": False,
+            "output": probe_output,
+        })
+        if not probe_ok:
+            report = _build_report(
+                steps,
+                profile=profile,
+                profile_reason=reason,
+                ok=False,
+                running=False,
+                error="Storefront returned a Magento error after deploy.",
+            )
+            await _emit_progress(
+                steps, on_progress, profile=profile, profile_reason=reason, ok=False, running=False
+            )
+            return report
 
     ok = all(s["ok"] or s["skipped"] for s in steps)
     report = _build_report(

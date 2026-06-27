@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import { migrateStep } from '../task-workflow/constants';
 import type { RunDetail, TaskWorkflowStep } from '@cpwork/shared';
 import { ArrowRight } from 'lucide-react';
 import { api, getApiErrorCode, getApiErrorMessage } from '../../lib/api';
+import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { previousStep } from '../task-workflow/constants';
 import { FilesChangedPanel } from './FilesChangedPanel';
 import { RecentCommitsTable } from './RecentCommitsTable';
@@ -36,7 +38,6 @@ export function PrStepPanel({
 }: PrStepPanelProps) {
   const { run, output, git } = detail;
   const wf = detail.workflow!;
-  const step = wf.currentStep;
 
   const [commitMessage, setCommitMessage] = useState('');
   const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
@@ -79,8 +80,25 @@ export function PrStepPanel({
       setActionError({ message: getApiErrorMessage(err), code: getApiErrorCode(err) }),
   });
 
+  const step = migrateStep(wf.currentStep);
   const prev = previousStep(step);
-  const canContinue = !!git?.committed;
+  const canContinue = !!(git?.prUrl || git?.pushed);
+
+  const advanceQaM = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/advance-to-qa`)).data.detail,
+    onSuccess: (d) => {
+      onChange(d);
+      onWorkflowTabChange('qa');
+    },
+    onError: (err) =>
+      setActionError({ message: getApiErrorMessage(err), code: getApiErrorCode(err) }),
+  });
+
+  useWorkflowBusy('git-commit', commitM.isPending, 'Committing changes…', 'Creating a git commit on your task branch.');
+  useWorkflowBusy('git-push', pushM.isPending, 'Pushing to remote…', 'Uploading commits to the remote repository.');
+  useWorkflowBusy('create-pr', prM.isPending, 'Creating pull request…', 'Opening a staging PR for review.');
+  useWorkflowBusy('advance-to-qa', advanceQaM.isPending, 'Continuing to QA…', 'Moving to automated test execution.');
 
   return (
     <div className="space-y-4">
@@ -119,11 +137,15 @@ export function PrStepPanel({
             </button>
             <button
               type="button"
-              className={taskBtnPrimary}
-              disabled={prM.isPending || !git?.pushed}
+              className={git?.prUrl ? taskBtnSecondary : taskBtnPrimary}
+              disabled={prM.isPending || !git?.pushed || !!git?.prUrl}
               onClick={() => prM.mutate()}
             >
-              {prM.isPending ? 'Opening PR…' : 'Create staging PR'}
+              {git?.prUrl
+                ? 'PR created ✓'
+                : prM.isPending
+                  ? 'Opening PR…'
+                  : 'Create staging PR'}
             </button>
           </div>
           {git?.prUrl && (
@@ -172,13 +194,10 @@ export function PrStepPanel({
         <button
           type="button"
           className={taskBtnPrimary}
-          disabled={!canContinue}
-          onClick={() => {
-            if (step === 'commit') onNavigate('jira_comment');
-            onWorkflowTabChange('deploy');
-          }}
+          disabled={!canContinue || advanceQaM.isPending}
+          onClick={() => advanceQaM.mutate()}
         >
-          Continue to Deploy
+          {advanceQaM.isPending ? 'Continuing…' : 'Continue to QA'}
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { RunDetail } from '@cpwork/shared';
-import { ArrowLeft, ExternalLink, MoreVertical, Pause, Play, XCircle } from 'lucide-react';
+import { ArrowLeft, ExternalLink, MoreVertical, Pause, Play, Trash2, XCircle } from 'lucide-react';
 import { StatusBadge } from '../ui/StatusBadge';
 import { taskAccent, taskAccentHover, taskBtnDanger, taskBtnGhost, taskBtnPrimary, taskIconBtn, taskMuted } from './taskStyles';
 
@@ -15,9 +15,11 @@ interface TaskActionBarProps {
   statusLabel?: string;
   pausePending?: boolean;
   cancelPending?: boolean;
+  deletePending?: boolean;
   startPending?: boolean;
   onPause?: () => void;
   onCancel?: () => void;
+  onDelete?: () => void;
   onStart?: () => void;
   onShowHistory?: () => void;
   onStartCustom?: () => void;
@@ -35,9 +37,11 @@ export function TaskActionBar({
   statusLabel,
   pausePending,
   cancelPending,
+  deletePending,
   startPending,
   onPause,
   onCancel,
+  onDelete,
   onStart,
   onShowHistory,
   onStartCustom,
@@ -171,6 +175,17 @@ export function TaskActionBar({
             >
               <XCircle className="h-4 w-4" />
               Cancel Task
+            </button>
+          )}
+          {detail && onDelete && (
+            <button
+              type="button"
+              className={taskBtnDanger}
+              disabled={deletePending || cancelPending}
+              onClick={onDelete}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete Task
             </button>
           )}
           <button

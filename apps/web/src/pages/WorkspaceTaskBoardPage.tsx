@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAdminRole, type JiraBoard, type Project } from '@cpwork/shared';
-import { BookOpen, History, ListTodo, PenLine, Settings } from 'lucide-react';
+import { BookOpen, History, ListTodo, PenLine, Settings, Sparkles } from 'lucide-react';
 import { api, getApiErrorMessage } from '../lib/api';
 import type { ProjectListItem } from '../lib/projects';
 import { setLastWorkspaceId } from '../lib/lastWorkspace';
@@ -13,8 +13,9 @@ import { TaskBoardPanel } from '../components/workspace/TaskBoardPanel';
 import { WorkspaceSettingsPanel } from '../components/workspace/WorkspaceSettingsPanel';
 import { WorkspaceTaskHistoryPanel } from '../components/workspace/WorkspaceTaskHistoryPanel';
 import { WorkspaceCustomTasksPanel } from '../components/workspace/WorkspaceCustomTasksPanel';
+import { WorkspaceLlmConfigPanel } from '../components/workspace/WorkspaceLlmConfigPanel';
 
-type WorkspaceTab = 'tasks' | 'knowledge' | 'history' | 'custom' | 'settings';
+type WorkspaceTab = 'tasks' | 'knowledge' | 'history' | 'custom' | 'settings' | 'llm';
 
 interface ProjectDetail {
   project: Project;
@@ -162,6 +163,7 @@ export function WorkspaceTaskBoardPage() {
             { id: 'history' as const, label: 'Task history', icon: History },
             { id: 'custom' as const, label: 'Custom tasks', icon: PenLine },
             { id: 'settings' as const, label: 'Settings', icon: Settings },
+            { id: 'llm' as const, label: 'LLM configuration', icon: Sparkles },
           ] as const
         ).map(({ id, label, icon: Icon }) => (
           <button
@@ -232,6 +234,10 @@ export function WorkspaceTaskBoardPage() {
           admin={admin}
           project={p ?? null}
         />
+      )}
+
+      {tab === 'llm' && (
+        <WorkspaceLlmConfigPanel projectId={projectId} project={p} />
       )}
     </div>
   );

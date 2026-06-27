@@ -6,17 +6,20 @@ import type {
   RunDetail,
   TaskWorkflowStep,
 } from '@cpwork/shared';
-import { WorkflowStepContent } from '../task-workflow/WorkflowStepContent';
+import { BuildStepPanel } from './BuildStepPanel';
 import { CodeStepPanel } from './CodeStepPanel';
 import { DeployStepPanel } from './DeployStepPanel';
+import { JiraCommentStepPanel } from './JiraCommentStepPanel';
 import { PrStepPanel } from './PrStepPanel';
-import { TestsStepPanel } from './TestsStepPanel';
+import { QaStepPanel } from './QaStepPanel';
 import { ProgressStrip } from './ProgressStrip';
 import { ReviewStepPanel } from './ReviewStepPanel';
-import { TaskContextRail } from './TaskContextRail';
 import { RequirementsStepPanel } from './RequirementsStepPanel';
-import { isEarlyWorkflowStep } from '../../lib/workflowAdvance';
-import { taskMuted, taskStrong } from './taskStyles';
+import { SetupStepPanel } from './SetupStepPanel';
+import { PreDevApprovalPanel } from './PreDevApprovalPanel';
+import { RequirementAnalysisSection } from './RequirementAnalysisSection';
+import { WorkflowSummaryRail } from './WorkflowSummaryRail';
+import { taskMuted } from './taskStyles';
 import type { WorkflowTab } from './WorkflowTabs';
 
 interface StepContentRouterProps {
@@ -35,33 +38,26 @@ interface StepContentRouterProps {
   onCustomTitleChange: (title: string) => void;
   onWorkflowTabChange: (tab: WorkflowTab) => void;
   onError: (message: string) => void;
+  codeGenPending?: boolean;
+  onCodeGenPending?: (pending: boolean) => void;
 }
 
-function WorkflowActions({
+function WithRail({
   detail,
   project,
   providers,
-  onChange,
-  onNavigate,
-  onWorkflowTabChange,
+  children,
 }: {
-  detail: RunDetail;
+  detail: RunDetail | null;
   project: Project;
   providers: AiProviderInfo[];
-  onChange: (d: RunDetail) => void;
-  onNavigate: (step: TaskWorkflowStep) => void;
-  onWorkflowTabChange?: (tab: WorkflowTab) => void;
+  children: React.ReactNode;
 }) {
   return (
-    <WorkflowStepContent
-      detail={detail}
-      project={project}
-      providers={providers}
-      onChange={onChange}
-      onNavigate={onNavigate}
-      onWorkflowTabChange={onWorkflowTabChange}
-      hideSetupSteps
-    />
+    <div className="grid min-h-0 gap-4 lg:grid-cols-[1fr_240px]">
+      <div className="min-w-0">{children}</div>
+      <WorkflowSummaryRail detail={detail} project={project} providers={providers} />
+    </div>
   );
 }
 
@@ -81,137 +77,177 @@ export function StepContentRouter({
   onCustomTitleChange,
   onWorkflowTabChange,
   onError,
+  codeGenPending,
+  onCodeGenPending,
 }: StepContentRouterProps) {
   const wf = detail?.workflow;
 
   switch (tab) {
     case 'requirements':
       return (
-        <RequirementsStepPanel
-          detail={detail}
-          preStart={preStart}
-          project={project}
-          providers={providers}
-          issue={issue}
-          customTitle={customTitle}
-          custom={custom}
-          selectedKey={selectedKey}
-          onChange={onChange}
-          onCustomTitleChange={onCustomTitleChange}
-          onWorkflowTabChange={onWorkflowTabChange}
-          onError={onError}
-        />
+        <WithRail detail={detail} project={project} providers={providers}>
+          <RequirementsStepPanel
+            detail={detail}
+            preStart={preStart}
+            project={project}
+            providers={providers}
+            issue={issue}
+            customTitle={customTitle}
+            custom={custom}
+            selectedKey={selectedKey}
+            onChange={onChange}
+            onCustomTitleChange={onCustomTitleChange}
+            onWorkflowTabChange={onWorkflowTabChange}
+            onError={onError}
+          />
+          {detail && (
+            <RequirementAnalysisSection
+              detail={detail}
+              onChange={onChange}
+              onError={onError}
+            />
+          )}
+        </WithRail>
       );
+
+    case 'setup':
+      return detail ? (
+        <WithRail detail={detail} project={project} providers={providers}>
+          <SetupStepPanel
+            detail={detail}
+            project={project}
+            providers={providers}
+            onChange={onChange}
+            onWorkflowTabChange={onWorkflowTabChange}
+            onError={onError}
+          />
+        </WithRail>
+      ) : null;
 
     case 'plan':
       return (
-        <div className="flex min-h-0 flex-col gap-4">
-          <ProgressStrip detail={detail} />
-          <TaskContextRail
-            issue={issue}
-            customTitle={customTitle || wf?.customTitle || undefined}
-            defaultCollapsed
-          />
-          <div className="min-w-0">
-            {detail && wf && !isEarlyWorkflowStep(wf.currentStep) ? (
-              <WorkflowActions
+        <WithRail detail={detail} project={project} providers={providers}>
+          <ProgressStrip detail={detail} project={project} providers={providers} />
+          {detail && wf ? (
+            <PreDevApprovalPanel
+              detail={detail}
+              onChange={onChange}
+              onWorkflowTabChange={onWorkflowTabChange}
+              onError={onError}
+              onCodeGenPending={onCodeGenPending}
+              onInterimDetail={onChange}
+            />
+          ) : (
+            <p className={`text-sm ${taskMuted}`}>Complete setup to generate plan artifacts.</p>
+          )}
+        </WithRail>
+      );
+
+    case 'code':
+      return (
+        <WithRail detail={detail} project={project} providers={providers}>
+          <div className="space-y-4">
+            <ProgressStrip detail={detail} project={project} providers={providers} />
+            {detail && wf ? (
+              <CodeStepPanel
                 detail={detail}
                 project={project}
                 providers={providers}
                 onChange={onChange}
                 onNavigate={onNavigate}
                 onWorkflowTabChange={onWorkflowTabChange}
+                codeGenPending={codeGenPending}
               />
-            ) : detail && wf && isEarlyWorkflowStep(wf.currentStep) ? (
-              <p className={`text-sm ${taskMuted}`}>
-                Go to <strong className={taskStrong}>Requirements</strong>, configure branch &amp; AI,
-                then click <strong className={taskStrong}>Generate plan</strong>.
-              </p>
             ) : (
-              <p className={`text-sm ${taskMuted}`}>Start the task to generate a plan.</p>
+              <p className={`text-sm ${taskMuted}`}>No active code generation.</p>
             )}
           </div>
-        </div>
+        </WithRail>
       );
 
-    case 'code':
+    case 'build':
       return (
-        <div className="space-y-4">
-          <ProgressStrip detail={detail} />
-          <TaskContextRail
-            issue={issue}
-            customTitle={wf?.customTitle || undefined}
-            defaultCollapsed={false}
-            showAcceptance={false}
-          />
+        <WithRail detail={detail} project={project} providers={providers}>
           {detail && wf ? (
-            <CodeStepPanel
+            <BuildStepPanel
               detail={detail}
               project={project}
-              providers={providers}
               onChange={onChange}
               onNavigate={onNavigate}
               onWorkflowTabChange={onWorkflowTabChange}
             />
           ) : (
-            <p className={`text-sm ${taskMuted}`}>No active code generation.</p>
+            <p className={`text-sm ${taskMuted}`}>Complete code generation first.</p>
           )}
-        </div>
+        </WithRail>
       );
 
     case 'review':
       return (
-        <div className="space-y-4">
-          <TaskContextRail
-            issue={issue}
-            customTitle={wf?.customTitle || undefined}
-            defaultCollapsed
-          />
+        <WithRail detail={detail} project={project} providers={providers}>
           {detail && wf ? (
             <ReviewStepPanel
-              detail={detail}
-              userNotes={detail.run.userInstructions}
-              onChange={onChange}
-              onNavigate={onNavigate}
-              onWorkflowTabChange={() => onWorkflowTabChange('tests')}
+                detail={detail}
+                userNotes={detail.run.userInstructions}
+                onChange={onChange}
+                onNavigate={onNavigate}
+                onWorkflowTabChange={onWorkflowTabChange}
             />
           ) : (
-            <p className={`text-sm ${taskMuted}`}>Start the task to review code changes.</p>
+            <p className={`text-sm ${taskMuted}`}>Complete code review before build verification.</p>
           )}
-        </div>
-      );
-
-    case 'tests':
-      return detail && wf ? (
-        <TestsStepPanel
-          detail={detail}
-          project={project}
-          activities={activities}
-          onChange={onChange}
-          onNavigate={onNavigate}
-          onWorkflowTabChange={onWorkflowTabChange}
-        />
-      ) : (
-        <p className={`text-sm ${taskMuted}`}>Complete review and approve code to run tests.</p>
+        </WithRail>
       );
 
     case 'pr':
       return detail && wf ? (
-        <PrStepPanel
-          detail={detail}
-          onChange={onChange}
-          onNavigate={onNavigate}
-          onWorkflowTabChange={onWorkflowTabChange}
-        />
+        <WithRail detail={detail} project={project} providers={providers}>
+          <PrStepPanel
+            detail={detail}
+            onChange={onChange}
+            onNavigate={onNavigate}
+            onWorkflowTabChange={onWorkflowTabChange}
+          />
+        </WithRail>
       ) : (
-        <p className={`text-sm ${taskMuted}`}>Complete tests and deploy before creating a PR.</p>
+        <p className={`text-sm ${taskMuted}`}>Approve code review before git operations.</p>
       );
 
-    case 'deploy':
+    case 'qa':
       return detail && wf ? (
-        <DeployStepPanel detail={detail} onChange={onChange} onNavigate={onNavigate} />
+        <WithRail detail={detail} project={project} providers={providers}>
+          <QaStepPanel
+            detail={detail}
+            onChange={onChange}
+            onNavigate={onNavigate}
+            onWorkflowTabChange={onWorkflowTabChange}
+          />
+        </WithRail>
       ) : (
-        <p className={`text-sm ${taskMuted}`}>Complete the PR step before posting to Jira.</p>
+        <p className={`text-sm ${taskMuted}`}>Complete PR step before QA.</p>
+      );
+
+    case 'jira':
+      return detail && wf ? (
+        <WithRail detail={detail} project={project} providers={providers}>
+          <JiraCommentStepPanel
+            detail={detail}
+            onChange={onChange}
+            onNavigate={onNavigate}
+            onWorkflowTabChange={onWorkflowTabChange}
+          />
+        </WithRail>
+      ) : (
+        <p className={`text-sm ${taskMuted}`}>Complete QA before posting to Jira.</p>
+      );
+
+    case 'done':
+      return detail && wf ? (
+        <WithRail detail={detail} project={project} providers={providers}>
+          <DeployStepPanel detail={detail} onNavigate={onNavigate} />
+        </WithRail>
+      ) : (
+        <p className={`text-sm ${taskMuted}`}>Finish the workflow to see completion summary.</p>
       );
 
     default:

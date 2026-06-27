@@ -28,6 +28,28 @@ def _compose_magento_rules(magento_template: str, implementation_quality: str) -
     return magento_template
 
 
+def project_id_from_ctx(ctx: dict) -> str | None:
+    pid = ctx.get("projectId")
+    if pid:
+        return str(pid)
+    project = ctx.get("project")
+    if isinstance(project, dict) and project.get("id"):
+        return str(project["id"])
+    return None
+
+
+def attach_project_ai_rules(ctx: dict, project_id: str | None = None) -> dict:
+    """Resolve admin AI rules for the project and attach to the run context."""
+    pid = project_id or project_id_from_ctx(ctx)
+    rules = resolve_effective_rules(pid)
+    return {
+        **ctx,
+        "projectId": pid,
+        "aiRules": rules,
+        "usingCustomAiRules": bool(rules.get("hasCustomRules")),
+    }
+
+
 def resolve_effective_rules(project_id: str | None) -> dict:
     """Return effective prompt rule strings for a project (custom or system defaults)."""
     defaults = get_default_rules()

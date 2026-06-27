@@ -2,6 +2,14 @@ DEPLOY_FIX_RULES = """You are fixing a Magento deploy failure (setup:upgrade, co
 Rules:
 - Fix ONLY the file(s) named in the deploy error output or PRIMARY FIX TARGETS list — whatever extension they use.
 - Do NOT change unrelated files. Read the error message, stack trace, and file path; edit the file(s) it actually points to.
+- When the error is Magento\\Framework\\Config\\Dom\\ValidationException with Element 'script', 'noscript', or head/layout XML messages:
+  * The root cause is invalid theme layout XML (e.g. default_head_blocks.xml) — NOT a PHP plugin from the stack trace.
+  * REQUIRED FIX PATTERN (same as GTM/tracking on Hyvä/Magento sites):
+    1. Move inline <script> and <noscript> OUT of layout XML into a new .phtml file under the theme templates/ folder.
+    2. Remove the invalid tags from the layout XML file (default_head_blocks.xml or similar).
+    3. Add a <block class="Magento\\Framework\\View\\Element\\Template" template="Module_Name::file.phtml"/> inside <referenceContainer name="head.additional"> (follow gtm_head.phtml wiring if present in excerpts).
+  * Never leave inline <script> without src= in layout XML. Never put <noscript> in head layout XML.
+  * Do NOT remove constructor dependencies or DI from unrelated PHP classes.
 - Apply the correct fix for the failing file type:
   * .xml (etc/*.xml, layout, db_schema, webapi, di, module, etc.): valid Magento XSD, correct root element and namespace for that file.
   * .php: valid PHP 8.3 syntax, correct namespaces/use statements, constructor DI, real method bodies — no stubs.
@@ -159,16 +167,16 @@ from services.prompt_budget import (
 
 
 def _rules_for_ctx(ctx: dict) -> dict:
-    from services.ai_rules import resolve_effective_rules
+    from services.ai_rules import resolve_effective_rules, project_id_from_ctx
 
-    project = ctx.get("project") or {}
-    project_id = project.get("id")
     if ctx.get("aiRules"):
         rules = ctx["aiRules"]
         return {
             "magentoRules": rules["magentoRules"],
             "agentOutputContract": rules["agentOutputContract"],
         }
+
+    project_id = project_id_from_ctx(ctx)
     effective = resolve_effective_rules(project_id)
     return {
         "magentoRules": effective["magentoRules"],
@@ -214,11 +222,23 @@ def _validation_fix_hints(errors: list[str]) -> str:
     missing_file = [e for e in errors if "file does not exist" in e.lower()]
     stub_file = [e for e in errors if "stub/placeholder" in e.lower()]
     stub_edit = [e for e in errors if "placeholder comments" in e.lower()]
+    layout_xml = [
+        e for e in errors
+        if "/layout/" in e.lower()
+        or "/page_layout/" in e.lower()
+        or "unescaped" in e.lower()
+        or "invalid xml" in e.lower()
+    ]
     if missing_file:
         paths = sorted({e.split(":")[0].strip() for e in missing_file if ":" in e})
         hints.append(
             "Files that do not exist yet MUST use action=\"create\" with full \"content\" "
             "(never action=\"modify\" with edits): " + ", ".join(paths)
+        )
+    if layout_xml:
+        hints.append(
+            "Fix layout/theme XML — escape every & as &amp; in attributes and URLs; "
+            "return action=\"modify\" with the full corrected XML file in \"content\"."
         )
     if stub_file or stub_edit:
         hints.append(
@@ -287,7 +307,11 @@ def build_prompt(ctx: dict) -> dict:
     ]
     project_block = "\n".join(p for p in project_block_parts if p)
     user_block = f"\nDeveloper instructions:\n{ctx['userInstructions']}" if ctx.get("userInstructions") else ""
-    common = f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}{_excerpts_block(ctx)}"
+    knowledge = ctx.get("knowledgeChunks") or []
+    knowledge_block = ""
+    if knowledge:
+        knowledge_block = "\n\nProject knowledge base:\n" + "\n".join(f"- {k}" for k in knowledge[:5])
+    common = f"{project_block}\n\n{_jira_block(ctx)}{user_block}{knowledge_block}{_repo_block(ctx)}{_excerpts_block(ctx)}"
 
     mode = ctx["mode"]
     validation_block = _validation_retry_block(ctx)
@@ -385,7 +409,9 @@ def build_prompt(ctx: dict) -> dict:
             )
         slim_common = f"{project_block}\n\n{_jira_block(ctx)}{user_block}{_repo_block(ctx)}"
         return {
-            "system": f"{TEST_FIX_RULES}\n\n{TEST_FIX_OUTPUT_CONTRACT}",
+            "system": (
+                f"{magento_rules}\n\n{TEST_FIX_RULES}\n\n{TEST_FIX_OUTPUT_CONTRACT}"
+            ),
             "user": (
                 "Automated checks failed after applying code changes. Fix the failure with minimal, targeted file changes.\n\n"
                 f"{slim_common}{plan_block}{target_block}{retry_block}\n\n"
@@ -408,7 +434,31 @@ def build_prompt(ctx: dict) -> dict:
         error_files = analysis.get("errorFiles") or []
         fix_targets = analysis.get("fixTargets") or []
         target_block = ""
-        if analysis.get("generatedError") and fix_targets:
+        layout_dom = any(
+            issue.get("kind") == "layout_dom_validation" for issue in (analysis.get("issues") or [])
+        )
+        if layout_dom and fix_targets:
+            ref_templates = analysis.get("layoutReferenceTemplates") or []
+            ref_block = ""
+            if ref_templates:
+                ref_block = (
+                    "\n\nReference tracking templates already on this site (follow this wiring pattern):\n"
+                    + "\n".join(f"- {path}" for path in ref_templates)
+                )
+            target_block = (
+                "\n\n*** LAYOUT/HEAD XML VALIDATION ERROR ***\n"
+                "The storefront failed because theme layout/head XML is invalid.\n"
+                "PRIMARY FIX TARGETS (edit these layout XML / phtml files ONLY):\n"
+                + "\n".join(f"- {path}" for path in fix_targets)
+                + ref_block
+                + "\n\nREQUIRED FIX (same pattern as Cursor/GTM on this project):\n"
+                "1. Create or update a .phtml template with the inline script/noscript body.\n"
+                "2. Remove inline <script> and <noscript> from layout XML.\n"
+                "3. Add a Template block in layout XML referencing the phtml (head.additional container).\n"
+                "Do NOT edit PHP plugin files from the stack trace.\n"
+                "Preserve all existing PHP class functionality (constructor DI, properties, methods)."
+            )
+        elif analysis.get("generatedError") and fix_targets:
             target_block = (
                 "\n\nPRIMARY FIX TARGETS (edit these app/code source files — NOT generated/ or vendor/):\n"
                 + "\n".join(f"- {path}" for path in fix_targets)
@@ -484,7 +534,9 @@ def build_prompt(ctx: dict) -> dict:
                 f"\n\nDeveloper instructions for this deploy fix (follow closely):\n{fix_instructions}\n"
             )
         return {
-            "system": f"{DEPLOY_FIX_RULES}\n\n{DEPLOY_FIX_OUTPUT_CONTRACT}",
+            "system": (
+                f"{magento_rules}\n\n{DEPLOY_FIX_RULES}\n\n{DEPLOY_FIX_OUTPUT_CONTRACT}"
+            ),
             "user": (
                 "A local Magento deployment failed. Fix the error with minimal, targeted file changes.\n\n"
                 f"{slim_common}{plan_block}{target_block}{retry_block}{syntax_block}{instructions_block}\n\n"

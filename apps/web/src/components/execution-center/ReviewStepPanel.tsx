@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { RunDetail, TaskWorkflowStep } from '@cpwork/shared';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, ArrowRight } from 'lucide-react';
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
+import { buildSuggestedFixRequest } from '../../lib/buildSuggestedFixRequest';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { DiffView } from '../DiffView';
 import { previousStep } from '../task-workflow/constants';
+import { migrateStep } from '../task-workflow/constants';
+import { AiReviewReportView } from './PreDevApprovalPanel';
+import type { WorkflowTab } from './WorkflowTabs';
 import {
   fileActionBadgeClass,
   fileListItemClass,
@@ -33,7 +37,7 @@ interface ReviewStepPanelProps {
   userNotes?: string | null;
   onChange: (d: RunDetail) => void;
   onNavigate: (step: TaskWorkflowStep) => void;
-  onWorkflowTabChange?: (tab: 'tests') => void;
+  onWorkflowTabChange?: (tab: WorkflowTab) => void;
 }
 
 function statusBadge(action: string, selected = false) {
@@ -56,8 +60,9 @@ export function ReviewStepPanel({
 }: ReviewStepPanelProps) {
   const { run, output } = detail;
   const wf = detail.workflow!;
-  const step = wf.currentStep;
-  const canApprove = step === 'code_review';
+  const step = migrateStep(wf.currentStep);
+  const canContinueToBuild = step === 'code_review' && !!detail.applied && !detail.deploy?.ok;
+  const canContinueToPr = step === 'code_review' && !!detail.applied && !!detail.deploy?.ok;
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -76,6 +81,8 @@ export function ReviewStepPanel({
     .filter((d) => d.error)
     .map((d) => `${d.path}: ${d.error}`);
   const hasBlockingIssues = validationErrors.length > 0 || diffErrors.length > 0;
+  const canInsertSuggestedFix =
+    (detail.error != null || hasBlockingIssues) && !refineText.trim();
   const activePath = selectedPath ?? files[0]?.path ?? diffs[0]?.path ?? null;
   const selectedDiff = diffs.find((d) => d.path === activePath) ?? diffs[0];
   const activeFile = files.find((f) => f.path === activePath);
@@ -117,12 +124,33 @@ export function ReviewStepPanel({
     onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
   });
 
-  const approveM = useMutation({
+  const aiReviewM = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/run-ai-review`, undefined, longRequest))
+        .data.detail,
+    onMutate: () => setActionError(null),
+    onSuccess: onChange,
+    onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
+  });
+
+  const continueToBuildM = useMutation({
+    mutationFn: async () =>
+      (
+        await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/complete-code-review`)
+      ).data.detail,
+    onSuccess: (d) => {
+      onChange(d);
+      onWorkflowTabChange?.('build');
+    },
+    onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
+  });
+
+  const continueToPrM = useMutation({
     mutationFn: async () =>
       (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/approve-code`)).data.detail,
     onSuccess: (d) => {
       onChange(d);
-      onWorkflowTabChange?.('tests');
+      onWorkflowTabChange?.('pr');
     },
     onError: (err) => setActionError({ message: getApiErrorMessage(err) }),
   });
@@ -130,7 +158,19 @@ export function ReviewStepPanel({
   useWorkflowBusy('apply-changes', applyM.isPending, 'Applying changes…', 'Writing approved AI file changes to your local project.');
   useWorkflowBusy('refine-code', refineM.isPending, 'Updating changes…', 'The Developer Agent is revising code based on your feedback.');
   useWorkflowBusy('revert-changes', revertM.isPending, 'Reverting changes…', 'Restoring files to their state before the last agent proposal.');
-  useWorkflowBusy('approve-code-review', approveM.isPending, 'Approving code…', 'Moving to the Tests step to run PHPUnit and validation.');
+  useWorkflowBusy('ai-review', aiReviewM.isPending, 'Running AI code review…', 'Checking standards, security, and performance.');
+  useWorkflowBusy(
+    'continue-to-build',
+    continueToBuildM.isPending,
+    'Continuing to build…',
+    'Unlocking build verification after code review.',
+  );
+  useWorkflowBusy(
+    'continue-to-pr',
+    continueToPrM.isPending,
+    'Continuing to PR…',
+    'Moving to git commit and pull request.',
+  );
 
   const prev = previousStep(step);
   const hasChecklist = manualTestChecklist.length > 0 || risks.length > 0;
@@ -145,7 +185,37 @@ export function ReviewStepPanel({
 
   return (
     <div className="space-y-4">
-      {output.summary && (
+      {!detail.applied && files.length > 0 && (
+        <div className={`${taskSurface} px-4 py-3`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <h3 className={taskTitle}>Code generation complete</h3>
+              {output.summary && <p className={`text-sm ${taskBody}`}>{output.summary}</p>}
+              <p className={`text-xs ${taskMuted}`}>
+                {files.length} file(s) — review diffs below, apply changes, then run build verification.
+              </p>
+            </div>
+            <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-300">
+              Not applied
+            </span>
+          </div>
+        </div>
+      )}
+
+      <AiReviewReportView report={wf.aiReview} />
+      {!wf.aiReview && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className={taskBtnSecondary}
+            disabled={aiReviewM.isPending || !detail.applied}
+            onClick={() => aiReviewM.mutate()}
+          >
+            {aiReviewM.isPending ? 'Reviewing…' : 'Run AI code review'}
+          </button>
+        </div>
+      )}
+      {output.summary && detail.applied && (
         <p className={`${taskSurface} px-4 py-3 text-sm ${taskBody}`}>
           {output.summary}
         </p>
@@ -210,7 +280,7 @@ export function ReviewStepPanel({
           <div className="flex flex-col border-b border-slate-200 dark:border-neutral-800/60 lg:border-b-0 lg:border-r">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800/60 px-3 py-2.5">
               <div>
-                <h3 className={taskTitle}>Files ({files.length})</h3>
+                <h3 className={taskTitle}>Code changes ({files.length})</h3>
                 {!detail.applied && files.length > 0 && (
                   <p className={`mt-0.5 text-[10px] ${taskMuted}`}>
                     {selected.length} selected
@@ -362,17 +432,13 @@ export function ReviewStepPanel({
             Describe what to change — the agent will update the proposal.
             {hasBlockingIssues && ' Quality issues listed above are sent automatically with your request.'}
           </p>
-          {hasBlockingIssues && !refineText.trim() && (
+          {canInsertSuggestedFix && (
             <button
               type="button"
               className={`mb-2 text-xs ${taskAccent} ${taskAccentHover}`}
               onClick={() =>
                 setRefineText(
-                  'Replace all stub/placeholder code with full implementations. ' +
-                    'New PHPUnit test files must use action=create with full file content. ' +
-                    'Keep every file from the current proposal — do not drop implementation files.\n\n' +
-                    'Issues to fix:\n' +
-                    [...validationErrors, ...diffErrors].map((e) => `- ${e}`).join('\n'),
+                  buildSuggestedFixRequest(validationErrors, diffErrors, detail.error),
                 )
               }
             >
@@ -466,15 +532,27 @@ export function ReviewStepPanel({
               Awaiting review
             </span>
           )}
-          {canApprove && (
+          {canContinueToBuild && (
             <button
               type="button"
               className={taskBtnPrimary}
-              disabled={approveM.isPending || !detail.applied}
-              title={!detail.applied ? 'Apply changes before approving' : undefined}
-              onClick={() => approveM.mutate()}
+              disabled={continueToBuildM.isPending || !detail.applied}
+              title={!detail.applied ? 'Apply changes before continuing' : undefined}
+              onClick={() => continueToBuildM.mutate()}
             >
-              {approveM.isPending ? 'Approving…' : 'Approve code →'}
+              {continueToBuildM.isPending ? 'Continuing…' : 'Continue to build'}
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          )}
+          {canContinueToPr && (
+            <button
+              type="button"
+              className={taskBtnPrimary}
+              disabled={continueToPrM.isPending}
+              onClick={() => continueToPrM.mutate()}
+            >
+              {continueToPrM.isPending ? 'Continuing…' : 'Continue to PR'}
+              <ArrowRight className="h-4 w-4" />
             </button>
           )}
         </div>

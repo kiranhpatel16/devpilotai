@@ -103,6 +103,25 @@ class _RunUsageRepo:
         ).fetchone()
         return {"input": row["inp"] or 0, "output": row["outp"] or 0}
 
+    def totals_for_run(self, run_id: str) -> dict:
+        row = get_db().execute(
+            """SELECT COALESCE(SUM(input_tokens), 0) AS inp,
+                      COALESCE(SUM(output_tokens), 0) AS outp,
+                      COALESCE(SUM(latency_ms), 0) AS latency,
+                      COUNT(*) AS calls
+               FROM run_ai_usage WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        inp = int(row["inp"] or 0)
+        outp = int(row["outp"] or 0)
+        return {
+            "inputTokens": inp,
+            "outputTokens": outp,
+            "totalTokens": inp + outp,
+            "latencyMs": int(row["latency"] or 0),
+            "callCount": int(row["calls"] or 0),
+        }
+
     def daily_activity(self, days: int = 7) -> list[dict]:
         rows = get_db().execute(
             """SELECT date(created_at) AS day,

@@ -130,7 +130,7 @@ def deploy_profile_reason(profile: DeployProfile, changed_paths: list[str]) -> s
     suffix = f" +{len(changed_paths) - 4} more" if len(changed_paths) > 4 else ""
     files = f"{', '.join(names)}{suffix}" if names else "no file list"
     if profile == "light":
-        return f"Template/layout-only changes ({files}) — cache flush is enough."
+        return f"Template/layout-only changes ({files}) — cache flush after XML validation."
     if profile == "standard":
         return f"PHP or config XML changed ({files}) — DI compile required."
     return f"Composer or module setup changed ({files}) — full Magento deploy."

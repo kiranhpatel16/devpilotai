@@ -30,7 +30,7 @@ export function AdminAiRulesPage() {
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectAiRulesSummary | null>(null);
 
   const listQ = useQuery({
     queryKey: ['admin', 'ai-rules'],
@@ -106,22 +106,38 @@ export function AdminAiRulesPage() {
   });
 
   const resetMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedId) return;
-      await api.delete(`/admin/ai-rules/${selectedId}`);
+    mutationFn: async (projectId: string) => {
+      await api.delete(`/admin/ai-rules/${projectId}`);
     },
-    onSuccess: () => {
-      setConfirmReset(false);
+    onSuccess: (_data, projectId) => {
+      setDeleteTarget(null);
       setDirty(false);
-      setSuccess('Reset to system defaults. Agents will use built-in rules until you save custom rules.');
+      if (selectedId === projectId) {
+        setSuccess('Reset to system defaults. Agents will use built-in rules until you save custom rules.');
+        void rulesQ.refetch();
+      } else {
+        setSuccess('Custom AI rules deleted for this project.');
+      }
       invalidate();
-      void rulesQ.refetch();
     },
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
   const selected = listQ.data?.find((p) => p.id === selectedId);
+  const customProjects = (listQ.data ?? []).filter((p) => p.hasCustomAiRules);
   const usingDefaults = rulesQ.data?.usingDefaults ?? !selected?.hasCustomAiRules;
+
+  function formatUpdatedAt(iso: string | null | undefined): string {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+    } catch {
+      return iso;
+    }
+  }
 
   function setRule(key: RuleKey, value: string) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -167,6 +183,83 @@ export function AdminAiRulesPage() {
         </select>
       </div>
 
+      <div className="card overflow-hidden">
+        <div className="border-b border-slate-200 px-4 py-3 dark:border-neutral-700">
+          <h2 className="text-sm font-medium text-slate-800 dark:text-slate-200">
+            Projects with custom AI rules
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            These workspaces override system defaults for agent prompts.
+          </p>
+        </div>
+        {listQ.isLoading && <p className="p-4 text-sm text-slate-400">Loading…</p>}
+        {!listQ.isLoading && customProjects.length === 0 && (
+          <p className="p-4 text-sm text-slate-400">
+            No projects have custom rules yet. Select a project above, customize the prompts, and
+            click Save AI rules.
+          </p>
+        )}
+        {customProjects.length > 0 && (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-slate-500 dark:bg-neutral-900 dark:text-slate-400">
+              <tr>
+                <th className="px-4 py-2">Project</th>
+                <th className="px-4 py-2">Slug</th>
+                <th className="px-4 py-2">Last updated</th>
+                <th className="px-4 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+              {customProjects.map((p) => (
+                <tr
+                  key={p.id}
+                  className={p.id === selectedId ? 'bg-brand-50/50 dark:bg-brand-950/20' : undefined}
+                >
+                  <td className="px-4 py-2 font-medium">
+                    {p.name}
+                    <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-900/40 dark:text-green-300">
+                      Custom
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-500">{p.slug}</td>
+                  <td className="px-4 py-2 text-slate-500">{formatUpdatedAt(p.updatedAt)}</td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        className="btn-ghost text-xs"
+                        onClick={() => selectProject(p.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger text-xs"
+                        disabled={resetMutation.isPending}
+                        onClick={() => setDeleteTarget(p)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      )}
+      {success && (
+        <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800 dark:bg-green-950/40 dark:text-green-300">
+          {success}
+        </div>
+      )}
+
       {!selectedId && (
         <p className="text-sm text-slate-400">
           Choose a project to view or edit its AI rules. After creating a project, configure rules here
@@ -211,7 +304,7 @@ export function AdminAiRulesPage() {
               <button
                 type="button"
                 className="btn-danger text-sm"
-                onClick={() => setConfirmReset(true)}
+                onClick={() => selected && setDeleteTarget(selected)}
               >
                 Delete custom rules (use defaults)
               </button>
@@ -232,13 +325,6 @@ export function AdminAiRulesPage() {
             ))}
           </div>
 
-          {error && (
-            <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
-          )}
-          {success && (
-            <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800">{success}</div>
-          )}
-
           <div className="flex justify-end gap-2">
             <button
               type="button"
@@ -252,12 +338,12 @@ export function AdminAiRulesPage() {
         </>
       )}
 
-      {confirmReset && selected && (
+      {deleteTarget && (
         <ConfirmDeleteModal
-          title={`Reset AI rules for "${selected.name}"?`}
-          message="This deletes custom rules for this project. Agent runs will use system defaults until you save new rules."
-          onClose={() => setConfirmReset(false)}
-          onConfirm={() => resetMutation.mutate()}
+          title={`Delete custom AI rules for "${deleteTarget.name}"?`}
+          message="This removes custom rules for this project. Agent runs will use system defaults until you save new rules."
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => resetMutation.mutate(deleteTarget.id)}
         />
       )}
     </div>

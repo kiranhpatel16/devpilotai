@@ -11,7 +11,7 @@ const ADAPTERS: Partial<Record<AiProviderId, AiAdapter>> = {
   openai: makeOpenAiCompatibleAdapter('openai', PROVIDER_CATALOG.openai.defaultBaseUrl!),
   grok: makeOpenAiCompatibleAdapter('grok', PROVIDER_CATALOG.grok.defaultBaseUrl!),
   cloud_ai: geminiAdapter,
-  // `cursor` requires the Cursor SDK runtime and is not wired in this build.
+  // `cursor` is wired in the Python API (cursor-sdk); not available in the TS API build.
 };
 
 export function getAdapter(providerId: AiProviderId): AiAdapter {

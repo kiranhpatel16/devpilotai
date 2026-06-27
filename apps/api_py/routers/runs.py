@@ -11,6 +11,7 @@ from db.project_roles import project_roles_repo
 from db.activities import activities_repo
 from db.ai_settings import run_usage_repo
 from database import now_iso
+import config as cfg
 from services.environment import resolve_environment
 from services.jira_service import get_issue_detail
 from services.ai_service import run_ai
@@ -22,6 +23,7 @@ from services.git_service import (
 )
 from services.pr_service import create_pull_request
 from services.testing_service import run_tests
+from services.workflow import migrate_step
 from services.agent_output_validator import (
     validate_agent_output,
     validate_deploy_fix_output,
@@ -33,6 +35,12 @@ from services.agent_output_validator import (
 from services.run_detail import load_detail, patch_detail
 from services.task_plan_storage import save_task_plan
 from services.ai_providers.registry import enabled_provider_info
+from services.project_llm_config import (
+    merge_llm_into_ctx,
+    resolve_planning_llm,
+    resolve_coding_llm,
+    resolve_llm_for_run,
+)
 from services.visual_test_service import screenshot_dir
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -83,10 +91,78 @@ def _load_owned_run(run_id: str, auth: dict) -> dict:
     return run
 
 
-def _assemble_detail(run_id: str) -> dict:
+def _usage_totals_for_run(run_id: str) -> dict:
+    totals = run_usage_repo.totals_for_run(run_id)
+    per_credit = cfg.TOKENS_PER_CREDIT or 1000
+    credits = round(totals["totalTokens"] / per_credit, 2)
+    return {**totals, "creditsUsed": credits}
+
+
+def _sync_run_llm_from_project(run_id: str, detail: dict | None = None) -> None:
+    """Keep workflow run provider/model aligned with workspace LLM config."""
     run = runs_repo.find_by_id(run_id)
-    detail = load_detail(run_id)
-    if run and run.get("branchName"):
+    if not run or run.get("mode") != "workflow":
+        return
+    detail = detail if detail is not None else load_detail(run_id)
+    if detail.get("llmOverride"):
+        return
+    try:
+        resolved = resolve_environment(run["userId"], run["projectId"])
+    except Exception:
+        return
+    llm = resolve_planning_llm(run, resolved["project"], detail=detail)
+    provider = _pick_provider(llm.get("provider"))
+    model = llm.get("model")
+    updates: dict[str, str | None] = {}
+    if provider and run.get("provider") != provider:
+        updates["provider"] = provider
+    if model is not None and run.get("model") != model:
+        updates["model"] = model
+    if updates:
+        runs_repo.update_fields(run_id, updates)
+
+
+def _effective_llm_for_run(run: dict, detail: dict | None = None) -> dict[str, str | None] | None:
+    if not run:
+        return None
+    try:
+        resolved = resolve_environment(run["userId"], run["projectId"])
+    except Exception:
+        return {
+            "provider": run.get("provider"),
+            "model": run.get("model"),
+            "planning": {"provider": run.get("provider"), "model": run.get("model")},
+            "coding": {
+                "provider": (detail or {}).get("codingProvider") or run.get("provider"),
+                "model": (detail or {}).get("codingModel") or run.get("model"),
+            },
+        }
+    wf_detail = detail if run.get("mode") == "workflow" else None
+    enabled_ids = [p["id"] for p in enabled_provider_info()]
+    planning = resolve_planning_llm(run, resolved["project"], detail=wf_detail)
+    coding = resolve_coding_llm(
+        run, resolved["project"], detail=wf_detail, enabled_provider_ids=enabled_ids,
+    )
+    planning_provider = _pick_provider(planning.get("provider"))
+    coding_provider = _pick_provider(coding.get("provider"))
+    return {
+        "provider": coding_provider,
+        "model": coding.get("model"),
+        "planning": {
+            "provider": planning_provider,
+            "model": planning.get("model"),
+        },
+        "coding": {
+            "provider": coding_provider,
+            "model": coding.get("model"),
+        },
+    }
+
+
+def _assemble_detail(run_id: str, detail_override: dict | None = None) -> dict:
+    run = runs_repo.find_by_id(run_id)
+    detail = detail_override if detail_override is not None else load_detail(run_id)
+    if run and run.get("branchName") and detail_override is None:
         try:
             resolved = resolve_environment(run["userId"], run["projectId"])
             detail = enrich_detail_files_from_git(
@@ -94,12 +170,24 @@ def _assemble_detail(run_id: str) -> dict:
             )
         except Exception:
             pass
+    if run and run.get("mode") == "workflow" and detail_override is None:
+        from services.workflow_sanitize import sanitize_workflow_detail
+        from services.run_detail import save_detail as persist_detail
+
+        sanitized, changed = sanitize_workflow_detail(run, detail)
+        if changed:
+            persist_detail(run_id, sanitized)
+            detail = sanitized
+    if run and run.get("mode") == "workflow":
+        _sync_run_llm_from_project(run_id, detail)
+        run = runs_repo.find_by_id(run_id)
     wf = None
     if run and run.get("mode") == "workflow":
         from services.workflow import extract_workflow
         wf = extract_workflow(detail)
     return {
         "run": run,
+        "effectiveLlm": _effective_llm_for_run(run, detail) if run else None,
         "output": detail["output"],
         "diffs": detail["diffs"],
         "applied": detail["applied"],
@@ -108,6 +196,7 @@ def _assemble_detail(run_id: str) -> dict:
         "deploy": detail.get("deploy"),
         "git": detail["git"],
         "usage": detail["usage"],
+        "usageTotals": _usage_totals_for_run(run_id),
         "error": runs_repo.get_error(run_id),
         "planFilePath": detail.get("planFilePath"),
         "workflow": wf,
@@ -125,14 +214,32 @@ def _pick_provider(requested: str | None) -> str:
 
 def _test_run_kwargs(run_id: str, resolved: dict) -> dict:
     detail = load_detail(run_id)
+    run = runs_repo.find_by_id(run_id)
     checklist: list[str] = []
     output = detail.get("output")
     if isinstance(output, dict):
         checklist = output.get("manualTestChecklist") or []
+
+    from services.workflow import extract_workflow
+
+    wf = extract_workflow(detail)
+    jira = wf.get("jiraSnapshot") or {}
+    task_context = {
+        "userInstructions": run.get("userInstructions") if run else None,
+        "summary": output.get("summary") if isinstance(output, dict) else None,
+        "customTitle": wf.get("customTitle"),
+        "customRequirements": wf.get("customRequirements"),
+        "jiraSummary": jira.get("summary"),
+        "jiraDescription": jira.get("description"),
+        "requirementAnalysis": detail.get("requirementAnalysis") or wf.get("requirementAnalysis"),
+        "testCases": wf.get("testCases"),
+    }
+
     return {
         "frontend_url": resolved.get("frontendUrl"),
         "run_id": run_id,
         "manual_test_checklist": checklist,
+        "task_context": task_context,
     }
 
 
@@ -149,7 +256,9 @@ async def create_run(body: CreateRunBody, auth: dict = Depends(get_auth)):
     agent_mode = body.mode == "agent"
     _assert_write_access(auth, body.projectId, agent_mode)
     resolved = resolve_environment(auth["sub"], body.projectId)
-    provider = _pick_provider(body.provider)
+    llm = resolve_llm_for_run({"provider": body.provider, "model": body.model}, resolved["project"])
+    provider = _pick_provider(llm["provider"])
+    model = llm["model"]
 
     desired_branch = (body.branchName or "").strip() or (body.jiraKey or "").strip()
     branch_name = _sanitize_branch(desired_branch) if agent_mode and desired_branch else None
@@ -160,7 +269,7 @@ async def create_run(body: CreateRunBody, auth: dict = Depends(get_auth)):
         "jiraKey": body.jiraKey,
         "mode": body.mode,
         "provider": provider,
-        "model": body.model,
+        "model": model,
         "userInstructions": body.userInstructions,
         "branchName": branch_name,
         "status": "branching" if agent_mode else "analyzing",
@@ -198,7 +307,7 @@ async def create_run(body: CreateRunBody, auth: dict = Depends(get_auth)):
             resolved["cwd"], task_text, resolved["project"].get("frontendTheme"),
         )
 
-        ai_result = await run_ai(provider, body.model, {
+        ai_result = await run_ai(provider, model, merge_llm_into_ctx({
             "project": resolved["project"],
             "cwd": resolved["cwd"],
             "frontendUrl": resolved["frontendUrl"],
@@ -210,7 +319,7 @@ async def create_run(body: CreateRunBody, auth: dict = Depends(get_auth)):
             "activeTheme": resolved["project"].get("frontendTheme"),
             "repoOverview": repo["overview"],
             "fileExcerpts": repo["excerpts"],
-        })
+        }, run, resolved["project"]))
 
         run_usage_repo.record(run["id"], ai_result["usage"])
         output = ai_result["output"]
@@ -406,7 +515,9 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
         raise HttpError.bad_request("Revert the applied changes before refining the proposal")
 
     resolved = resolve_environment(run["userId"], run["projectId"])
-    provider = _pick_provider(run.get("provider"))
+    llm = resolve_llm_for_run(run, resolved["project"], detail=detail if run["mode"] == "workflow" else None)
+    provider = _pick_provider(llm["provider"])
+    model = llm["model"]
 
     try:
         prior_output = detail["output"]
@@ -416,11 +527,12 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
         )
         refine_instructions = body.instructions.strip()
         if prior_blocking:
+            from services.agent_output_validator import refine_blocking_preamble
+
             issue_list = "\n".join(f"- {err}" for err in prior_blocking)
             refine_instructions = (
                 f"{refine_instructions}\n\n"
-                "Fix these quality issues in the current proposal (replace stub/placeholder code "
-                "with full implementations — do not drop unrelated files):\n"
+                f"{refine_blocking_preamble(prior_blocking)}\n"
                 f"{issue_list}"
             ).strip()
 
@@ -439,7 +551,7 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
             plan_markdown=detail.get("planMarkdown"),
             prior_output=prior_output,
         )
-        ai_result = await run_ai(provider, run.get("model"), {
+        ai_result = await run_ai(provider, model, merge_llm_into_ctx({
             "project": resolved["project"],
             "cwd": resolved["cwd"],
             "frontendUrl": resolved["frontendUrl"],
@@ -456,7 +568,7 @@ async def refine_run(run_id: str, body: RefineBody, auth: dict = Depends(get_aut
             "refineInstructions": refine_instructions,
             "validationErrors": prior_blocking,
             "approvedPlanMarkdown": detail.get("planMarkdown"),
-        })
+        }, run, resolved["project"]))
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
         broken_paths = paths_from_blocking_errors(prior_blocking)
@@ -523,13 +635,24 @@ async def test_run(run_id: str, auth: dict = Depends(get_auth)):
     detail = load_detail(run_id)
     changed = [f["path"] for f in (detail["output"]["files"] if detail["output"] else [])]
     prior_test = detail.get("test")
-    report = await run_tests(
-        resolved["cwd"],
-        changed,
-        resolved["env"].get("phpBin") or "php",
-        prior_test=prior_test,
-        **_test_run_kwargs(run_id, resolved),
-    )
+    wf_step = migrate_step(detail.get("currentStep") or "")
+    if run.get("mode") == "workflow" and wf_step == "qa":
+        from services.testing_service import run_qa_pipeline
+        report = await run_qa_pipeline(
+            resolved["cwd"],
+            changed,
+            resolved["env"].get("phpBin") or "php",
+            prior_test=prior_test,
+            **_test_run_kwargs(run_id, resolved),
+        )
+    else:
+        report = await run_tests(
+            resolved["cwd"],
+            changed,
+            resolved["env"].get("phpBin") or "php",
+            prior_test=prior_test,
+            **_test_run_kwargs(run_id, resolved),
+        )
     patch_detail(run_id, {"test": report})
     run = runs_repo.find_by_id(run_id)
     if run and run.get("mode") == "workflow":

@@ -10,6 +10,7 @@ import type {
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { getDeployBusyDetail } from '../../lib/workflowStatus';
+import { getEffectiveLlm } from '../../lib/effectiveLlm';
 import { RunPanel } from '../RunPanel';
 import { previousStep } from './constants';
 import {
@@ -114,12 +115,13 @@ export function WorkflowStepContent({
   const jiraDraftInitializedRef = useRef(false);
 
   useEffect(() => {
+    const effective = getEffectiveLlm(detail, project, providers);
     setBranchName(run.branchName || run.jiraKey || '');
-    setProvider(run.provider || providers[0]?.id || '');
-    setModel(run.model || '');
+    setProvider(effective.provider || providers[0]?.id || '');
+    setModel(effective.model || '');
     setInstructions(run.userInstructions || '');
     setPlanMarkdown(wf.planMarkdown || '');
-  }, [run.id, wf.planMarkdown, detail.output?.summary]);
+  }, [run.id, wf.planMarkdown, detail.output?.summary, project, providers]);
 
   const activeProvider = providers.find((p) => p.id === provider) || providers[0];
 
@@ -356,8 +358,17 @@ export function WorkflowStepContent({
   });
 
   const step = wf.currentStep;
-  const providerLabel = detail.run.provider ?? 'AI';
-  const modelLabel = detail.run.model ?? providers.find((p) => p.id === detail.run.provider)?.defaultModel ?? 'default model';
+  const { provider: effectiveProvider, model: effectiveModel } = getEffectiveLlm(
+    detail,
+    project,
+    providers,
+    'coding',
+  );
+  const providerLabel = effectiveProvider ?? 'AI';
+  const modelLabel =
+    effectiveModel ??
+    providers.find((p) => p.id === effectiveProvider)?.defaultModel ??
+    'default model';
   const deployBusyDetail = getDeployBusyDetail(detail.deploy);
 
   useWorkflowBusy('save-step', saveStepM.isPending, 'Saving…', 'Updating workflow step settings.');

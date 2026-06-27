@@ -132,6 +132,17 @@ class _RunsRepo:
             for r in rows
         ]
 
+    def find_latest_workflow_for_task(
+        self, project_id: str, user_id: str, jira_key: str
+    ) -> dict | None:
+        row = get_db().execute(
+            """SELECT * FROM runs
+               WHERE project_id=? AND user_id=? AND jira_key=? AND mode='workflow'
+               ORDER BY updated_at DESC LIMIT 1""",
+            (project_id, user_id, jira_key),
+        ).fetchone()
+        return _map_row(row) if row else None
+
     def delete_by_id(self, run_id: str) -> bool:
         db = get_db()
         cur = db.execute("DELETE FROM runs WHERE id = ?", (run_id,))

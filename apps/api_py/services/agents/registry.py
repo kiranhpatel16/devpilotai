@@ -4,12 +4,22 @@ AGENT_REGISTRY = {
     "planner": {
         "id": "planner",
         "label": "Planner Agent",
-        "steps": ["select", "analysis", "plan", "review_plan"],
+        "steps": [
+            "select",
+            "requirement_analysis",
+            "architecture_design",
+            "development_plan",
+            "test_cases",
+            "pre_dev_approval",
+            "analysis",
+            "plan",
+            "review_plan",
+        ],
     },
     "developer": {
         "id": "developer",
         "label": "Developer Agent",
-        "steps": ["branch", "agent"],
+        "steps": ["environment_setup", "branch", "agent"],
     },
     "reviewer": {
         "id": "reviewer",
@@ -19,7 +29,7 @@ AGENT_REGISTRY = {
     "qa": {
         "id": "qa",
         "label": "QA Agent",
-        "steps": ["tests", "magento_validate"],
+        "steps": ["tests", "magento_validate", "qa"],
     },
     "deployment": {
         "id": "deployment",
@@ -30,6 +40,9 @@ AGENT_REGISTRY = {
 
 
 def agent_for_step(step: str) -> str | None:
+    from services.workflow import migrate_step
+
+    step = migrate_step(step)
     for agent_id, cfg in AGENT_REGISTRY.items():
         if step in cfg["steps"]:
             return agent_id

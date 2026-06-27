@@ -8,6 +8,7 @@ from services.environment import resolve_environment
 from services.ai_service import run_ai
 from services.repo_context import build_repo_context
 from services.ai_providers.registry import enabled_provider_info
+from services.ai_rules import attach_project_ai_rules
 from db.knowledge import knowledge_repo, project_memory_repo
 from middleware.auth import is_admin_role
 
@@ -53,7 +54,7 @@ async def project_chat(project_id: str, body: ChatBody, auth: dict = Depends(get
     elif body.mode == "generate_test":
         instructions = f"Generate unit test plan for: {body.message}"
 
-    ctx = {
+    ctx = attach_project_ai_rules({
         "mode": mode_map[body.mode],
         "project": resolved["project"],
         "cwd": resolved["cwd"],
@@ -61,7 +62,7 @@ async def project_chat(project_id: str, body: ChatBody, auth: dict = Depends(get
         "repoOverview": repo["overview"],
         "fileExcerpts": repo["excerpts"],
         "knowledgeChunks": [f"{k['title']}: {k['content'][:500]}" for k in knowledge],
-    }
+    }, project_id)
     provider = _pick_provider()
     result = await run_ai(provider, None, ctx)
     output = result["output"]
@@ -82,7 +83,7 @@ async def analyze_incident(project_id: str, body: IncidentBody, auth: dict = Dep
     _assert_access(auth, project_id)
     resolved = resolve_environment(auth["sub"], project_id)
     provider = _pick_provider()
-    ctx = {
+    ctx = attach_project_ai_rules({
         "mode": "debug",
         "project": resolved["project"],
         "cwd": resolved["cwd"],
@@ -92,7 +93,7 @@ async def analyze_incident(project_id: str, body: IncidentBody, auth: dict = Dep
         ),
         "repoOverview": build_repo_context(resolved["cwd"], body.logs[:500], None)["overview"],
         "fileExcerpts": [],
-    }
+    }, project_id)
     result = await run_ai(provider, None, ctx)
     output = result["output"]
     return {

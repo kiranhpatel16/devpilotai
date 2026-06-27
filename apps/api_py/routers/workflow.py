@@ -14,6 +14,7 @@ from db.users import users_repo
 from services.environment import resolve_environment
 from services.jira_service import get_issue_detail, post_issue_comment
 from services.ai_service import run_ai
+from services.agent_chunked_generation import run_chunked_agent
 from services.repo_context import enrich_repo_context, build_repo_context
 from services.git_service import (
     compute_diffs,
@@ -33,9 +34,30 @@ from services.workflow import (
     format_jira_comment,
     jira_snapshot_from_issue,
     mark_completed,
+    migrate_step,
     step_index,
 )
+from services.workflow_artifacts import (
+    generate_architecture_design,
+    generate_requirement_analysis,
+    generate_test_cases,
+    merge_plan_tasks_from_ai,
+)
+from services.agents.orchestrator import orchestrator
+from services.testing_service import run_qa_pipeline
+from db.knowledge import knowledge_repo
 from services.deploy_profile import deploy_profile_reason, resolve_deploy_profile
+from services.project_llm_config import (
+    merge_llm_into_ctx,
+    resolve_planning_llm,
+    resolve_coding_llm,
+    resolve_llm_for_run,
+)
+from services.workflow_sanitize import (
+    clear_pre_dev_artifacts,
+    sanitize_workflow_detail,
+    stamp_artifacts,
+)
 from services.deploy_service import run_local_deploy
 from services.deploy_error_service import (
     analyze_deploy_failure,
@@ -46,9 +68,12 @@ from services.deploy_error_service import (
     gather_deploy_fix_excerpts,
     merge_deploy_analysis,
     sanitize_deploy_fix_files,
+    build_deploy_fix_default_instructions,
 )
+from services.layout_head_fix_service import build_layout_head_dom_auto_fix
 from services.test_error_service import (
     analyze_test_failure,
+    build_layout_xml_auto_fix,
     build_phpunit_auto_fix,
     gather_test_fix_excerpts,
 )
@@ -73,8 +98,11 @@ class UpdateStepBody(BaseModel):
     branchName: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    codingProvider: Optional[str] = None
+    codingModel: Optional[str] = None
     userInstructions: Optional[str] = None
     customTitle: Optional[str] = None
+    devAgentId: Optional[str] = None
 
 
 class SavePlanBody(BaseModel):
@@ -131,6 +159,26 @@ def _pick_provider(requested: str | None) -> str:
     return enabled[0]["id"]
 
 
+def _enabled_provider_ids() -> list[str]:
+    return [p["id"] for p in enabled_provider_info()]
+
+
+def _planning_ai_targets(run: dict, project: dict | None, detail: dict | None = None) -> tuple[str, str | None]:
+    llm = resolve_planning_llm(run, project, detail=detail)
+    return _pick_provider(llm["provider"]), llm["model"]
+
+
+def _coding_ai_targets(run: dict, project: dict | None, detail: dict | None = None) -> tuple[str, str | None]:
+    llm = resolve_coding_llm(
+        run, project, detail=detail, enabled_provider_ids=_enabled_provider_ids(),
+    )
+    return _pick_provider(llm["provider"]), llm["model"]
+
+
+def _ai_targets(run: dict, project: dict | None, detail: dict | None = None) -> tuple[str, str | None]:
+    return _planning_ai_targets(run, project, detail=detail)
+
+
 def _task_key(run: dict, detail: dict) -> str:
     return (run.get("jiraKey") or "").strip() or detail.get("customTitle") or run["id"]
 
@@ -140,9 +188,46 @@ def _jira_for_run(run: dict, detail: dict) -> dict | None:
     return snap if isinstance(snap, dict) and snap.get("key") else None
 
 
-def _assemble_detail(run_id: str) -> dict:
+async def _ensure_jira_snapshot(run: dict, detail: dict) -> dict:
+    """Keep jiraSnapshot aligned with the run ticket so AI artifacts match the active task."""
+    jira_key = (run.get("jiraKey") or "").strip()
+    if not jira_key:
+        return detail
+    snap = detail.get("jiraSnapshot")
+    if isinstance(snap, dict) and snap.get("key") == jira_key:
+        return detail
+    try:
+        issue = await get_issue_detail(run["projectId"], jira_key)
+        fresh = jira_snapshot_from_issue(issue)
+    except Exception:
+        fresh = {"key": jira_key, "summary": jira_key, "description": ""}
+    patch_detail(run["id"], {"jiraSnapshot": fresh})
+    return {**detail, "jiraSnapshot": fresh}
+
+
+def _assemble_detail(run_id: str, detail_override: dict | None = None) -> dict:
     from routers.runs import _assemble_detail as base_assemble
+    if detail_override is not None:
+        run = runs_repo.find_by_id(run_id)
+        if run and run.get("mode") == "workflow":
+            return base_assemble(run_id, detail_override=detail_override)
     return base_assemble(run_id)
+
+
+async def _assemble_detail_fresh(run_id: str) -> dict:
+    """Load workflow detail with live Jira snapshot and drop stale pre-dev artifacts."""
+    run = runs_repo.find_by_id(run_id)
+    if not run:
+        raise HttpError.not_found("Run not found")
+    detail = load_detail(run_id)
+    if run.get("mode") == "workflow":
+        detail = await _ensure_jira_snapshot(run, detail)
+        sanitized, changed = sanitize_workflow_detail(run, detail)
+        if changed:
+            save_detail(run_id, sanitized)
+            detail = sanitized
+        return _assemble_detail(run_id, detail_override=detail)
+    return _assemble_detail(run_id)
 
 
 def _init_detail() -> dict:
@@ -151,7 +236,8 @@ def _init_detail() -> dict:
     return {**EMPTY_DETAIL, **empty_workflow_state()}
 
 
-async def _build_ai_context(run: dict, detail: dict, resolved: dict):
+async def _build_ai_context(run: dict, detail: dict, resolved: dict, *, fresh_pipeline: bool = False):
+    detail = await _ensure_jira_snapshot(run, detail)
     jira = _jira_for_run(run, detail)
     task_text = " ".join(filter(None, [
         jira["summary"] if jira else detail.get("customTitle"),
@@ -159,14 +245,23 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict):
         run.get("userInstructions"),
         run.get("branchName"),
     ]))
+    plan_markdown = None if fresh_pipeline else detail.get("planMarkdown")
+    prior_output = None if fresh_pipeline else detail.get("output")
     repo = enrich_repo_context(
         resolved["cwd"],
         task_text,
         resolved["project"].get("frontendTheme"),
-        plan_markdown=detail.get("planMarkdown"),
-        prior_output=detail.get("output"),
+        plan_markdown=plan_markdown,
+        prior_output=prior_output,
     )
-    return {
+    knowledge_chunks = []
+    try:
+        for doc in knowledge_repo.search(run["projectId"], task_text, limit=5):
+            knowledge_chunks.append(f"{doc['title']}: {doc['content'][:600]}")
+    except Exception:
+        pass
+    base = {
+        "projectId": run["projectId"],
         "project": resolved["project"],
         "cwd": resolved["cwd"],
         "frontendUrl": resolved["frontendUrl"],
@@ -174,10 +269,17 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict):
         "jira": jira,
         "jiraKey": run.get("jiraKey"),
         "userInstructions": run.get("userInstructions"),
+        "devAgentId": detail.get("devAgentId") or "magento",
         "activeTheme": resolved["project"].get("frontendTheme"),
         "repoOverview": repo["overview"],
         "fileExcerpts": repo["excerpts"],
+        "knowledgeChunks": knowledge_chunks,
+        "requirementAnalysis": None if fresh_pipeline else detail.get("requirementAnalysis"),
+        "architectureDesign": None if fresh_pipeline else detail.get("architectureDesign"),
+        "planMarkdown": None if fresh_pipeline else detail.get("planMarkdown"),
+        "testCases": None if fresh_pipeline else detail.get("testCases"),
     }
+    return merge_llm_into_ctx(base, run, resolved["project"], detail=detail)
 
 
 async def _build_deploy_fix_context(
@@ -200,7 +302,8 @@ async def _build_deploy_fix_context(
     repo = build_repo_context(resolved["cwd"], task_text, resolved["project"].get("frontendTheme"))
     last_fix = (deploy or {}).get("lastFix")
     last_failed_fix = last_fix if last_fix and last_fix.get("status") == "failed" else None
-    return {
+    base = {
+        "projectId": run["projectId"],
         "project": resolved["project"],
         "cwd": resolved["cwd"],
         "frontendUrl": resolved["frontendUrl"],
@@ -224,6 +327,7 @@ async def _build_deploy_fix_context(
         "deployLastFix": (deploy or {}).get("lastFix"),
         "deployFixInstructions": (fix_instructions or "").strip() or None,
     }
+    return merge_llm_into_ctx(base, run, resolved["project"], detail=detail, purpose="coding")
 
 
 async def _build_test_fix_context(
@@ -245,7 +349,8 @@ async def _build_test_fix_context(
     changed_paths = [f["path"] for f in (detail.get("output") or {}).get("files") or []]
     last_fix = (test_report or {}).get("lastFix")
     last_failed_fix = last_fix if last_fix and last_fix.get("status") == "failed" else None
-    return {
+    base = {
+        "projectId": run["projectId"],
         "project": resolved["project"],
         "cwd": resolved["cwd"],
         "frontendUrl": resolved["frontendUrl"],
@@ -268,6 +373,7 @@ async def _build_test_fix_context(
         "dockerComposePath": resolved["env"].get("dockerComposePath"),
         "testLastFix": (test_report or {}).get("lastFix"),
     }
+    return merge_llm_into_ctx(base, run, resolved["project"], detail=detail, purpose="coding")
 
 
 def _accessible_project_ids(auth: dict) -> list[str]:
@@ -417,13 +523,21 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
             jira_snapshot = {"key": jira_key, "summary": jira_key, "description": ""}
 
     user_instructions = (body.userInstructions or "").strip() or None
+    llm = resolve_planning_llm({"provider": None, "model": None}, resolved["project"])
+    provider = _pick_provider(llm["provider"])
+    coding_llm = resolve_coding_llm(
+        {"provider": None, "model": None},
+        resolved["project"],
+        enabled_provider_ids=_enabled_provider_ids(),
+    )
+    coding_provider = _pick_provider(coding_llm["provider"])
     run = runs_repo.create({
         "projectId": body.projectId,
         "userId": auth["sub"],
         "jiraKey": jira_key,
         "mode": "workflow",
-        "provider": None,
-        "model": None,
+        "provider": provider,
+        "model": llm["model"],
         "branchName": None,
         "userInstructions": user_instructions,
         "status": "selected",
@@ -435,19 +549,21 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
 
     detail = _init_detail()
     detail["jiraSnapshot"] = jira_snapshot
+    detail["codingProvider"] = coding_provider
+    detail["codingModel"] = coding_llm["model"]
     custom_title = (body.customTitle or "").strip() or None
     detail["customTitle"] = custom_title
     detail["customTaskKey"] = (body.customTaskKey or "").strip() or None
     detail["customRequirements"] = (body.customRequirements or "").strip() or None
 
     if jira_key:
-        detail["currentStep"] = "branch"
+        detail["currentStep"] = "requirement_analysis"
         detail["completedSteps"] = mark_completed([], "select")
-        initial_step = "branch"
+        initial_step = "requirement_analysis"
     else:
-        detail["currentStep"] = "describe"
-        detail["completedSteps"] = mark_completed(mark_completed([], "select"), "branch")
-        initial_step = "describe"
+        detail["currentStep"] = "requirement_analysis"
+        detail["completedSteps"] = mark_completed([], "select")
+        initial_step = "requirement_analysis"
 
     save_detail(run["id"], detail)
 
@@ -470,13 +586,28 @@ async def start_workflow(body: StartWorkflowBody, auth: dict = Depends(get_auth)
         ),
     })
 
-    return {"detail": _assemble_detail(run["id"])}
+    return {"detail": await _assemble_detail_fresh(run["id"])}
+
+
+@router.get("/runs/by-task")
+async def get_workflow_by_task(
+    projectId: str,
+    jiraKey: str,
+    auth: dict = Depends(get_auth),
+):
+    _assert_project_access(auth, projectId)
+    if not jiraKey.strip():
+        raise HttpError.bad_request("jiraKey is required")
+    run = runs_repo.find_latest_workflow_for_task(projectId, auth["sub"], jiraKey.strip())
+    if not run:
+        return {"detail": None}
+    return {"detail": await _assemble_detail_fresh(run["id"])}
 
 
 @router.get("/runs/{run_id}")
 async def get_workflow_run(run_id: str, auth: dict = Depends(get_auth)):
     _load_workflow_run(run_id, auth)
-    return {"detail": _assemble_detail(run_id)}
+    return {"detail": await _assemble_detail_fresh(run_id)}
 
 
 @router.patch("/runs/{run_id}/step")
@@ -501,10 +632,23 @@ async def update_workflow_step(run_id: str, body: UpdateStepBody, auth: dict = D
         run_fields["provider"] = _pick_provider(body.provider)
     if body.model is not None:
         run_fields["model"] = body.model or None
+    if body.codingProvider is not None:
+        patch["codingProvider"] = _pick_provider(body.codingProvider)
+    if body.codingModel is not None:
+        patch["codingModel"] = body.codingModel or None
+    if (
+        body.provider is not None
+        or body.model is not None
+        or body.codingProvider is not None
+        or body.codingModel is not None
+    ):
+        patch["llmOverride"] = True
     if body.userInstructions is not None:
         run_fields["userInstructions"] = body.userInstructions or None
     if body.customTitle is not None:
         patch["customTitle"] = body.customTitle.strip() or None
+    if body.devAgentId is not None:
+        patch["devAgentId"] = body.devAgentId.strip() or "magento"
 
     target_idx = step_index(body.step)
     current_idx = step_index(wf["currentStep"])
@@ -533,20 +677,118 @@ async def get_saved_plan(run_id: str, auth: dict = Depends(get_auth)):
     return {"planMarkdown": plan_text, "planFilePath": plan_path}
 
 
+@router.post("/runs/{run_id}/generate-analysis")
+async def generate_analysis(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    detail = await _ensure_jira_snapshot(run, detail)
+    detail = clear_pre_dev_artifacts(detail)
+    save_detail(run_id, detail)
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    provider, model = _ai_targets(run, resolved["project"], detail)
+    try:
+        ctx = await _build_ai_context(run, detail, resolved, fresh_pipeline=True)
+        ai_result = await generate_requirement_analysis(provider, model, ctx)
+        run_usage_repo.record(run_id, ai_result["usage"])
+        analysis = ai_result.get("requirementAnalysis") or ai_result.get("analysis") or {}
+        wf = extract_workflow(detail)
+        stamped = stamp_artifacts({
+            **detail,
+            "requirementAnalysis": analysis,
+            "usage": ai_result["usage"],
+            "currentStep": "environment_setup",
+            "completedSteps": mark_completed(wf["completedSteps"], "requirement_analysis"),
+        }, run)
+        patch_detail(run_id, stamped)
+        runs_repo.update_fields(run_id, {"currentStep": "environment_setup"})
+        return {"detail": await _assemble_detail_fresh(run_id)}
+    except Exception as err:
+        runs_repo.set_error(run_id, str(err))
+        patch_detail(run_id, {"approvalStatus": "failed"})
+        runs_repo.update_fields(run_id, {"approvalStatus": "failed"})
+        raise
+
+
+@router.post("/runs/{run_id}/generate-architecture")
+async def generate_architecture(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    if not detail.get("requirementAnalysis"):
+        raise HttpError.bad_request("Generate requirement analysis first")
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    provider, model = _ai_targets(run, resolved["project"], detail)
+    try:
+        ctx = await _build_ai_context(run, detail, resolved)
+        ai_result = await generate_architecture_design(provider, model, ctx)
+        run_usage_repo.record(run_id, ai_result["usage"])
+        design = ai_result.get("architectureDesign") or {}
+        wf = extract_workflow(detail)
+        patch_detail(run_id, {
+            "architectureDesign": design,
+            "usage": ai_result["usage"],
+            "currentStep": "development_plan",
+            "completedSteps": mark_completed(wf["completedSteps"], "architecture_design"),
+        })
+        runs_repo.update_fields(run_id, {"currentStep": "development_plan"})
+        return {"detail": _assemble_detail(run_id)}
+    except Exception as err:
+        runs_repo.set_error(run_id, str(err))
+        raise
+
+
+@router.post("/runs/{run_id}/generate-test-cases")
+async def generate_workflow_test_cases(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    if not detail.get("planMarkdown"):
+        raise HttpError.bad_request("Generate development plan first")
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    provider, model = _ai_targets(run, resolved["project"], detail)
+    try:
+        ctx = await _build_ai_context(run, detail, resolved)
+        ctx["approvedPlanMarkdown"] = detail.get("planMarkdown")
+        ai_result = await generate_test_cases(provider, model, ctx)
+        run_usage_repo.record(run_id, ai_result["usage"])
+        cases = ai_result.get("testCases") or []
+        if not cases:
+            raise HttpError.bad_request(
+                "Test case generation produced no cases. Regenerate test cases or review the development plan."
+            )
+        wf = extract_workflow(detail)
+        stamped = stamp_artifacts({
+            **detail,
+            "testCases": cases,
+            "usage": ai_result["usage"],
+            "currentStep": "pre_dev_approval",
+            "completedSteps": mark_completed(wf["completedSteps"], "test_cases"),
+            "approvalStatus": "pre_dev_pending",
+        }, run)
+        patch_detail(run_id, stamped)
+        runs_repo.update_fields(run_id, {
+            "currentStep": "pre_dev_approval",
+            "approvalStatus": "pre_dev_pending",
+        })
+        return {"detail": _assemble_detail(run_id)}
+    except Exception as err:
+        runs_repo.set_error(run_id, str(err))
+        raise
+
+
 @router.post("/runs/{run_id}/generate-plan")
 async def generate_plan(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     detail = load_detail(run_id)
     resolved = resolve_environment(run["userId"], run["projectId"])
-    provider = _pick_provider(run.get("provider"))
+    provider, model = _ai_targets(run, resolved["project"], detail)
 
     try:
         ctx = await _build_ai_context(run, detail, resolved)
         ctx["mode"] = "plan"
-        ai_result = await run_ai(provider, run.get("model"), ctx)
+        ai_result = await run_ai(provider, model, ctx)
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
         plan_text = output.get("text") or ""
+        plan_tasks = merge_plan_tasks_from_ai(plan_text, output)
         task_key = _task_key(run, detail)
         plan_path = save_task_plan(
             project_slug=resolved["project"]["slug"],
@@ -560,14 +802,15 @@ async def generate_plan(run_id: str, auth: dict = Depends(get_auth)):
             "output": output,
             "usage": ai_result["usage"],
             "planMarkdown": plan_text,
+            "planTasks": plan_tasks or None,
             "planFilePath": plan_path,
-            "currentStep": "review_plan",
-            "completedSteps": mark_completed(mark_completed(wf["completedSteps"], "plan"), "describe"),
-            "approvalStatus": "plan_pending",
+            "currentStep": "test_cases",
+            "completedSteps": mark_completed(wf["completedSteps"], "development_plan"),
+            "approvalStatus": "draft",
         })
         runs_repo.update_fields(run_id, {
-            "currentStep": "review_plan",
-            "approvalStatus": "plan_pending",
+            "currentStep": "test_cases",
+            "approvalStatus": "draft",
             "provider": provider,
             "summary": output.get("summary") or None,
         })
@@ -606,22 +849,39 @@ async def save_plan(run_id: str, body: SavePlanBody, auth: dict = Depends(get_au
 
 @router.post("/runs/{run_id}/approve-plan")
 async def approve_plan(run_id: str, auth: dict = Depends(get_auth)):
+    return await approve_pre_dev(run_id, auth)
+
+
+@router.post("/runs/{run_id}/approve-pre-dev")
+async def approve_pre_dev(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     _assert_project_access(auth, run["projectId"], write=True)
     detail = load_detail(run_id)
+    missing = []
+    if not detail.get("requirementAnalysis"):
+        missing.append("requirement analysis")
+    if not detail.get("architectureDesign"):
+        missing.append("architecture design")
     if not detail.get("planMarkdown"):
-        raise HttpError.bad_request("No plan to approve")
+        missing.append("development plan")
+    if not detail.get("testCases"):
+        missing.append("test cases")
+    if missing:
+        raise HttpError.bad_request(f"Missing: {', '.join(missing)}")
 
     wf = extract_workflow(detail)
+    approved_at = now_iso()
     patch_detail(run_id, {
-        "planApprovedAt": now_iso(),
+        "planApprovedAt": approved_at,
         "planApprovedBy": auth["sub"],
-        "approvalStatus": "plan_approved",
+        "preDevApprovedAt": approved_at,
+        "preDevApprovedBy": auth["sub"],
+        "approvalStatus": "pre_dev_approved",
         "currentStep": "agent",
-        "completedSteps": mark_completed(wf["completedSteps"], "review_plan"),
+        "completedSteps": mark_completed(wf["completedSteps"], "pre_dev_approval"),
     })
     runs_repo.update_fields(run_id, {
-        "approvalStatus": "plan_approved",
+        "approvalStatus": "pre_dev_approved",
         "currentStep": "agent",
     })
     return {"detail": _assemble_detail(run_id)}
@@ -632,13 +892,13 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     _assert_project_access(auth, run["projectId"], write=True)
     detail = load_detail(run_id)
-    if not detail.get("planApprovedAt"):
-        raise HttpError.forbidden("Approve the plan before running the agent")
+    if not detail.get("planApprovedAt") and not detail.get("preDevApprovedAt"):
+        raise HttpError.forbidden("Approve all pre-development artifacts before running the agent")
     if not run.get("branchName"):
         raise HttpError.bad_request("Branch name is required")
 
     resolved = resolve_environment(run["userId"], run["projectId"])
-    provider = _pick_provider(run.get("provider"))
+    provider, model = _coding_ai_targets(run, resolved["project"], detail)
 
     try:
         branch_info = await create_branch(
@@ -647,8 +907,18 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         ctx = await _build_ai_context(run, detail, resolved)
         ctx["mode"] = "agent"
         ctx["approvedPlanMarkdown"] = detail.get("planMarkdown")
-        ai_result = await run_ai(provider, run.get("model"), ctx)
-        run_usage_repo.record(run_id, ai_result["usage"])
+
+        runs_repo.update_fields(run_id, {"status": "analyzing", "currentStep": "agent"})
+        patch_detail(run_id, {"currentStep": "agent"})
+
+        ai_result = await run_chunked_agent(
+            run_id,
+            provider,
+            model,
+            ctx,
+            plan_markdown=detail.get("planMarkdown") or "",
+            plan_tasks=detail.get("planTasks"),
+        )
         output = ai_result["output"]
         validation = ai_result.get("validation") or {}
         blocking = validation.get("blocking") or output.get("validationErrors") or []
@@ -685,7 +955,16 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         raise
     except Exception as err:
         runs_repo.set_error(run_id, str(err))
-        patch_detail(run_id, {"approvalStatus": "failed"})
+        patch_detail(run_id, {
+            "approvalStatus": "failed",
+            "agentGeneration": {
+                "status": "failed",
+                "currentChunk": 0,
+                "totalChunks": 0,
+                "filesGenerated": 0,
+                "chunks": [],
+            },
+        })
         runs_repo.update_fields(run_id, {"approvalStatus": "failed", "status": "failed"})
         raise
 
@@ -695,13 +974,54 @@ async def approve_code(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
+    deploy = detail.get("deploy")
+    if wf["currentStep"] == "code_review":
+        if not detail.get("applied"):
+            raise HttpError.bad_request("Apply code changes before continuing")
+        if deploy and deploy.get("ok"):
+            patch_detail(run_id, {
+                "approvalStatus": "code_approved",
+                "currentStep": "commit",
+                "completedSteps": mark_completed(wf["completedSteps"], "code_review"),
+            })
+            runs_repo.update_fields(run_id, {
+                "approvalStatus": "code_approved",
+                "currentStep": "commit",
+                "status": "commit_ready",
+            })
+            return {"detail": _assemble_detail(run_id)}
+        raise HttpError.bad_request("Complete build verification before approving for git operations")
+    if wf["currentStep"] != "deploy":
+        raise HttpError.bad_request("Code approval is not available on this step")
+    if not deploy or not deploy.get("ok"):
+        raise HttpError.bad_request("Complete build verification before continuing to git")
     patch_detail(run_id, {
         "approvalStatus": "code_approved",
+        "currentStep": "commit",
+        "completedSteps": mark_completed(wf["completedSteps"], "deploy"),
+    })
+    runs_repo.update_fields(run_id, {
+        "approvalStatus": "code_approved",
+        "currentStep": "commit",
+        "status": "commit_ready",
+    })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/complete-code-review")
+async def complete_code_review(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] != "code_review":
+        raise HttpError.bad_request("Not on the code review step")
+    if not detail.get("applied"):
+        raise HttpError.bad_request("Apply code changes before build verification")
+    patch_detail(run_id, {
         "currentStep": "deploy",
         "completedSteps": mark_completed(wf["completedSteps"], "code_review"),
     })
     runs_repo.update_fields(run_id, {
-        "approvalStatus": "code_approved",
         "currentStep": "deploy",
         "status": "deploy_ready",
     })
@@ -717,6 +1037,7 @@ def _schedule_deploy_job(
     changed_paths: list[str] | None = None,
     project_deploy_mode: str = "auto",
     skip_composer_project: bool = False,
+    frontend_url: str | None = None,
 ) -> None:
     if run_id in _deploy_tasks and not _deploy_tasks[run_id].done():
         return
@@ -749,6 +1070,7 @@ def _schedule_deploy_job(
                 changed_paths=changed_paths,
                 project_deploy_mode=project_deploy_mode,
                 skip_composer_project=skip_composer_project,
+                frontend_url=frontend_url,
             )
             if not report.get("ok"):
                 report = enrich_deploy_report(report, cwd)
@@ -783,9 +1105,9 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
     if wf["currentStep"] != "deploy":
-        raise HttpError.bad_request("Deploy is only available on the deploy step")
-    if wf["approvalStatus"] != "code_approved":
-        raise HttpError.bad_request("Approve code before deploying")
+        raise HttpError.bad_request("Deploy is only available on the build verification step")
+    if not detail.get("applied"):
+        raise HttpError.bad_request("Apply code changes before running build verification")
 
     existing = detail.get("deploy")
     if existing and existing.get("running"):
@@ -814,6 +1136,7 @@ async def deploy_locally(run_id: str, auth: dict = Depends(get_auth)):
         changed_paths=changed_paths,
         project_deploy_mode=defaults.get("deployProfile") or "auto",
         skip_composer_project=bool(defaults.get("deploySkipComposer")),
+        frontend_url=resolved.get("frontendUrl"),
     )
     existing_deploy = detail.get("deploy") or {}
     patch_detail(run_id, {
@@ -857,12 +1180,19 @@ async def deploy_fix(run_id: str, body: DeployFixBody = DeployFixBody(), auth: d
     cwd = resolved["cwd"]
     php_bin = resolved["env"].get("phpBin") or "php"
     docker_compose_path = resolved["env"].get("dockerComposePath")
-    analysis = enrich_deploy_fix_analysis(merge_deploy_analysis(deploy, cwd), detail, cwd)
+    analysis = enrich_deploy_fix_analysis(
+        merge_deploy_analysis(deploy, cwd),
+        detail,
+        cwd,
+        active_theme=resolved["project"].get("frontendTheme"),
+    )
     if not (analysis.get("rawOutput") or analysis.get("issues")):
         raise HttpError.bad_request("No deploy error output available to fix.")
 
     last_fix = (deploy or {}).get("lastFix")
     auto_output = build_auto_fix_proposals(cwd, analysis)
+    if not auto_output:
+        auto_output = build_layout_head_dom_auto_fix(cwd, analysis, detail)
     if not auto_output:
         auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
     fix_mode = "auto"
@@ -872,12 +1202,14 @@ async def deploy_fix(run_id: str, body: DeployFixBody = DeployFixBody(), auth: d
         output = auto_output
     else:
         fix_mode = "ai"
-        provider = _pick_provider(run.get("provider"))
-        fix_instructions = (body.instructions or "").strip() or None
+        provider, model = _coding_ai_targets(run, resolved["project"], detail)
+        user_instructions = (body.instructions or "").strip()
+        default_instructions = build_deploy_fix_default_instructions(analysis, deploy)
+        fix_instructions = user_instructions or default_instructions or None
         ctx = await _build_deploy_fix_context(
             run, detail, resolved, deploy, analysis, fix_instructions=fix_instructions,
         )
-        ai_result = await run_ai(provider, run.get("model"), ctx)
+        ai_result = await run_ai(provider, model, ctx)
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
 
@@ -912,14 +1244,24 @@ async def deploy_fix(run_id: str, body: DeployFixBody = DeployFixBody(), auth: d
         cwd, output, analysis, php_bin=php_bin, docker_compose_path=docker_compose_path,
     )
     if validation["blocking"] and fix_mode == "ai":
-        auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
+        auto_output = build_layout_head_dom_auto_fix(cwd, analysis, detail)
         if auto_output:
             output = auto_output
             fix_mode = "auto"
-            files = output.get("files") or []
+            files = sanitize_deploy_fix_files(cwd, analysis, auto_output.get("files") or [])
+            output = {**auto_output, "files": files}
             validation = validate_deploy_fix_output(
                 cwd, output, analysis, php_bin=php_bin, docker_compose_path=docker_compose_path,
             )
+        if validation["blocking"]:
+            auto_output = build_php_syntax_auto_fix(cwd, analysis, php_bin, docker_compose_path)
+            if auto_output:
+                output = auto_output
+                fix_mode = "auto"
+                files = output.get("files") or []
+                validation = validate_deploy_fix_output(
+                    cwd, output, analysis, php_bin=php_bin, docker_compose_path=docker_compose_path,
+                )
     if validation["blocking"]:
         if fix_mode == "auto":
             raise HttpError(
@@ -980,17 +1322,22 @@ async def test_fix(run_id: str, auth: dict = Depends(get_auth)):
     _assert_project_access(auth, run["projectId"], write=True)
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
-    if wf["currentStep"] not in ("deploy", "commit"):
-        raise HttpError.bad_request("Test fix is only available after code is approved")
+    if wf["currentStep"] not in ("deploy", "commit", "qa", "jira_comment", "code_review"):
+        raise HttpError.bad_request("Test fix is only available while QA or build checks are in progress")
 
     test_report = detail.get("test")
-    if not test_report or test_report.get("ok"):
+    failed_any = any(
+        not s.get("ok") and not s.get("skipped")
+        for s in (test_report.get("steps") or []) if test_report
+    )
+    if not test_report or (test_report.get("ok") and not failed_any):
         raise HttpError.bad_request("No failing test report to fix")
     if test_report.get("running"):
         raise HttpError.bad_request("Tests are still running")
 
     resolved = resolve_environment(run["userId"], run["projectId"])
     cwd = resolved["cwd"]
+    changed_paths = [f["path"] for f in (detail.get("output") or {}).get("files") or []]
     analysis = analyze_test_failure(test_report)
     if not analysis.get("aiFixable"):
         raise HttpError.bad_request("No test failure output available to fix.")
@@ -998,20 +1345,24 @@ async def test_fix(run_id: str, auth: dict = Depends(get_auth)):
     last_fix = (test_report or {}).get("lastFix")
     fix_mode = "auto"
     ai_result = None
-    auto_output = build_phpunit_auto_fix(cwd, analysis)
+    auto_output = build_layout_xml_auto_fix(cwd, analysis, changed_paths)
+    if not auto_output:
+        auto_output = build_phpunit_auto_fix(cwd, analysis)
     if auto_output:
         output = auto_output
     else:
         fix_mode = "ai"
-        provider = _pick_provider(run.get("provider"))
+        provider, model = _coding_ai_targets(run, resolved["project"], detail)
         ctx = await _build_test_fix_context(run, detail, resolved, test_report, analysis)
-        ai_result = await run_ai(provider, run.get("model"), ctx)
+        ai_result = await run_ai(provider, model, ctx)
         run_usage_repo.record(run_id, ai_result["usage"])
         output = ai_result["output"]
 
     files = output.get("files") or []
     if not files and fix_mode == "ai":
-        auto_output = build_phpunit_auto_fix(cwd, analysis)
+        auto_output = build_layout_xml_auto_fix(cwd, analysis, changed_paths)
+        if not auto_output:
+            auto_output = build_phpunit_auto_fix(cwd, analysis)
         if auto_output:
             output = auto_output
             fix_mode = "auto"
@@ -1035,7 +1386,9 @@ async def test_fix(run_id: str, auth: dict = Depends(get_auth)):
         docker_compose_path=resolved["env"].get("dockerComposePath"),
     )
     if validation["blocking"] and fix_mode == "ai":
-        auto_output = build_phpunit_auto_fix(cwd, analysis)
+        auto_output = build_layout_xml_auto_fix(cwd, analysis, changed_paths)
+        if not auto_output:
+            auto_output = build_phpunit_auto_fix(cwd, analysis)
         if auto_output:
             output = auto_output
             fix_mode = "auto"
@@ -1075,7 +1428,9 @@ async def test_fix(run_id: str, auth: dict = Depends(get_auth)):
     git = await get_status(cwd, resolved["project"]["git"]["productionBranch"])
     git["branch"] = run.get("branchName")
     fix_summary = output.get("summary") or (
-        "Auto-fixed PHPUnit test mock" if fix_mode == "auto" else "AI agent proposed fixes for the test failure"
+        "Auto-fixed test/storefront failure"
+        if fix_mode == "auto"
+        else "AI agent proposed fixes for the test failure"
     )
 
     patch_detail(run_id, {
@@ -1111,7 +1466,7 @@ async def complete_deploy(run_id: str, auth: dict = Depends(get_auth)):
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
     if wf["currentStep"] != "deploy":
-        raise HttpError.bad_request("Not on the deploy step")
+        raise HttpError.bad_request("Not on the build verification step")
     deploy = detail.get("deploy")
     if not deploy or not deploy.get("ok"):
         raise HttpError.bad_request("Run local deploy successfully before continuing")
@@ -1119,11 +1474,95 @@ async def complete_deploy(run_id: str, auth: dict = Depends(get_auth)):
     patch_detail(run_id, {
         "currentStep": "commit",
         "completedSteps": mark_completed(wf["completedSteps"], "deploy"),
+        "approvalStatus": "code_approved",
     })
     runs_repo.update_fields(run_id, {
         "currentStep": "commit",
         "status": "commit_ready",
+        "approvalStatus": "code_approved",
     })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/run-ai-review")
+async def run_ai_review(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    _assert_project_access(auth, run["projectId"], write=True)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] != "code_review":
+        raise HttpError.bad_request("AI review is only available on the code review step")
+    if not detail.get("output"):
+        raise HttpError.bad_request("No code changes to review")
+
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    provider, model = _ai_targets(run, resolved["project"], detail)
+    ctx = await _build_ai_context(run, detail, resolved)
+    ctx["mode"] = "agent"
+    ctx["priorOutput"] = detail.get("output")
+    ai_result = await orchestrator.run_for_step("ai_review", provider, model, ctx)
+    run_usage_repo.record(run_id, ai_result["usage"])
+    review = ai_result.get("aiReview") or {}
+    patch_detail(run_id, {"aiReview": review, "usage": ai_result["usage"]})
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/complete-qa")
+async def complete_qa(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] != "qa":
+        raise HttpError.bad_request("Not on the QA step")
+    test = detail.get("test")
+    if not test or not test.get("ok"):
+        raise HttpError.bad_request("QA must pass before marking ready for merge")
+
+    test_pass_rate = compute_test_pass_rate(test)
+    completed = mark_completed(wf["completedSteps"], "qa")
+
+    if run.get("jiraKey"):
+        patch_detail(run_id, {
+            "currentStep": "jira_comment",
+            "completedSteps": completed,
+            "testPassRate": test_pass_rate,
+        })
+        runs_repo.update_fields(run_id, {
+            "currentStep": "jira_comment",
+            "testPassRate": test_pass_rate,
+        })
+    else:
+        patch_detail(run_id, {
+            "currentStep": "done",
+            "completedSteps": completed,
+            "approvalStatus": "done",
+            "testPassRate": test_pass_rate,
+        })
+        runs_repo.update_fields(run_id, {
+            "currentStep": "done",
+            "approvalStatus": "done",
+            "status": "done",
+            "testPassRate": test_pass_rate,
+        })
+    return {"detail": _assemble_detail(run_id)}
+
+
+@router.post("/runs/{run_id}/advance-to-qa")
+async def advance_to_qa(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    git = detail.get("git") or {}
+    if wf["currentStep"] != "commit":
+        raise HttpError.bad_request("Complete git operations before QA")
+    if not git.get("prUrl") and not git.get("pushed"):
+        raise HttpError.bad_request("Push branch or create PR before QA")
+
+    patch_detail(run_id, {
+        "currentStep": "qa",
+        "completedSteps": mark_completed(wf["completedSteps"], "commit"),
+    })
+    runs_repo.update_fields(run_id, {"currentStep": "qa", "status": "qa_ready"})
     return {"detail": _assemble_detail(run_id)}
 
 
@@ -1164,6 +1603,26 @@ async def post_jira(run_id: str, body: PostJiraCommentBody, auth: dict = Depends
         "status": "done",
     })
     return {"detail": _assemble_detail(run_id), "commentId": comment_id}
+
+
+@router.post("/runs/{run_id}/skip-jira-comment")
+async def skip_jira_comment(run_id: str, auth: dict = Depends(get_auth)):
+    run = _load_workflow_run(run_id, auth)
+    detail = load_detail(run_id)
+    wf = extract_workflow(detail)
+    if wf["currentStep"] != "jira_comment":
+        raise HttpError.bad_request("Not on the Jira comment step")
+    patch_detail(run_id, {
+        "currentStep": "done",
+        "completedSteps": mark_completed(wf["completedSteps"], "jira_comment"),
+        "approvalStatus": "done",
+    })
+    runs_repo.update_fields(run_id, {
+        "currentStep": "done",
+        "approvalStatus": "done",
+        "status": "done",
+    })
+    return {"detail": _assemble_detail(run_id)}
 
 
 @router.post("/runs/{run_id}/restore")
