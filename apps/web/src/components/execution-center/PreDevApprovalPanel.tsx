@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { RunDetail } from '@cpwork/shared';
 import { ArrowRight, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
-import { api, getApiErrorMessage, longRequest } from '../../lib/api';
+import { api, getApiErrorMessage } from '../../lib/api';
+import { runAgentAndPoll } from '../../lib/runAgentPipeline';
 import { regenerateRequirementAnalysis } from '../../lib/regenerateRequirementAnalysis';
 import { regenerateTestCases } from '../../lib/regenerateTestCases';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
@@ -76,9 +77,7 @@ export function PreDevApprovalPanel({
         await api.post<{ detail: RunDetail }>(`/workflow/runs/${runId}/approve-pre-dev`)
       ).data.detail;
       onInterimDetail?.(approved);
-      return (
-        await api.post<{ detail: RunDetail }>(`/workflow/runs/${runId}/run-agent`, undefined, longRequest)
-      ).data.detail;
+      return runAgentAndPoll(runId);
     },
     onMutate: () => {
       onCodeGenPending?.(true);

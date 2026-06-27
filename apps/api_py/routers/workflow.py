@@ -82,6 +82,7 @@ from database import now_iso
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
 _deploy_tasks: dict[str, asyncio.Task] = {}
+_agent_tasks: dict[str, asyncio.Task] = {}
 
 
 class StartWorkflowBody(BaseModel):
@@ -169,9 +170,22 @@ def _planning_ai_targets(run: dict, project: dict | None, detail: dict | None = 
 
 
 def _coding_ai_targets(run: dict, project: dict | None, detail: dict | None = None) -> tuple[str, str | None]:
+    enabled = _enabled_provider_ids()
     llm = resolve_coding_llm(
-        run, project, detail=detail, enabled_provider_ids=_enabled_provider_ids(),
+        run, project, detail=detail, enabled_provider_ids=enabled,
     )
+    detail = detail or {}
+    # Cursor SDK is the preferred executor for multi-file coding — avoids long API JSON runs.
+    if "cursor" in enabled:
+        from services.project_llm_config import parse_llm_config, _default_coding_model
+
+        cfg = parse_llm_config((project or {}).get("llmConfig"))
+        model = (
+            detail.get("codingModel")
+            if detail.get("codingProvider") == "cursor"
+            else _default_coding_model(cfg, "cursor")
+        )
+        return "cursor", model or "composer-2.5"
     return _pick_provider(llm["provider"]), llm["model"]
 
 
@@ -421,6 +435,12 @@ def _cancel_deploy_task(run_id: str) -> None:
     deploy_task = _deploy_tasks.pop(run_id, None)
     if deploy_task and not deploy_task.done():
         deploy_task.cancel()
+
+
+def _cancel_agent_task(run_id: str) -> None:
+    agent_task = _agent_tasks.pop(run_id, None)
+    if agent_task and not agent_task.done():
+        agent_task.cancel()
 
 
 @router.get("/history")
@@ -899,6 +919,57 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
     if not run.get("branchName"):
         raise HttpError.bad_request("Branch name is required")
 
+    if run_id in _agent_tasks and not _agent_tasks[run_id].done():
+        return {"detail": _assemble_detail(run_id), "started": False, "alreadyRunning": True}
+
+    resolved = resolve_environment(run["userId"], run["projectId"])
+    provider, model = _coding_ai_targets(run, resolved["project"], detail)
+
+    try:
+        await create_branch(
+            resolved["cwd"], run["branchName"], resolved["project"]["git"]["productionBranch"],
+        )
+    except HttpError:
+        raise
+    except Exception as err:
+        raise HttpError.bad_request(str(err)) from err
+
+    runs_repo.update_fields(run_id, {"status": "analyzing", "currentStep": "agent"})
+    patch_detail(run_id, {
+        "currentStep": "agent",
+        "codingProvider": provider,
+        "codingModel": model,
+        "agentGeneration": {
+            "status": "running",
+            "currentChunk": 0,
+            "totalChunks": 0,
+            "chunkLabel": "Starting…",
+            "filesGenerated": 0,
+            "chunks": [],
+        },
+    })
+    _schedule_agent_job(run_id)
+    return {"detail": _assemble_detail(run_id), "started": True}
+
+
+def _schedule_agent_job(run_id: str) -> None:
+    if run_id in _agent_tasks and not _agent_tasks[run_id].done():
+        return
+
+    async def job() -> None:
+        try:
+            await _execute_agent_run(run_id)
+        finally:
+            _agent_tasks.pop(run_id, None)
+
+    _agent_tasks[run_id] = asyncio.create_task(job())
+
+
+async def _execute_agent_run(run_id: str) -> None:
+    run = runs_repo.find_by_id(run_id)
+    if not run:
+        return
+    detail = load_detail(run_id)
     resolved = resolve_environment(run["userId"], run["projectId"])
     provider, model = _coding_ai_targets(run, resolved["project"], detail)
 
@@ -909,9 +980,6 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         ctx = await _build_ai_context(run, detail, resolved)
         ctx["mode"] = "agent"
         ctx["approvedPlanMarkdown"] = detail.get("planMarkdown")
-
-        runs_repo.update_fields(run_id, {"status": "analyzing", "currentStep": "agent"})
-        patch_detail(run_id, {"currentStep": "agent"})
 
         ai_result = await run_chunked_agent(
             run_id,
@@ -935,6 +1003,7 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
         if branch_info.get("stashed"):
             git["stashed"] = True
 
+        detail = load_detail(run_id)
         wf = extract_workflow(detail)
         patch_detail(run_id, {
             "output": output,
@@ -945,6 +1014,14 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
             "currentStep": "code_review",
             "completedSteps": mark_completed(wf["completedSteps"], "agent"),
             "approvalStatus": "code_pending",
+            "agentGeneration": {
+                "status": "complete",
+                "currentChunk": (detail.get("agentGeneration") or {}).get("totalChunks") or 0,
+                "totalChunks": (detail.get("agentGeneration") or {}).get("totalChunks") or 0,
+                "chunkLabel": "Complete",
+                "filesGenerated": len(output.get("files") or []),
+                "chunks": (detail.get("agentGeneration") or {}).get("chunks") or [],
+            },
         })
         runs_repo.update_fields(run_id, {
             "status": "awaiting_review",
@@ -952,9 +1029,31 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
             "approvalStatus": "code_pending",
             "summary": output.get("summary") or None,
         })
-        return {"detail": _assemble_detail(run_id)}
-    except HttpError:
+    except asyncio.CancelledError:
+        patch_detail(run_id, {
+            "agentGeneration": {
+                "status": "failed",
+                "currentChunk": 0,
+                "totalChunks": 0,
+                "chunkLabel": "Cancelled",
+                "filesGenerated": 0,
+                "chunks": [],
+            },
+        })
         raise
+    except HttpError as err:
+        runs_repo.set_error(run_id, str(err.detail))
+        patch_detail(run_id, {
+            "approvalStatus": "failed",
+            "agentGeneration": {
+                "status": "failed",
+                "currentChunk": 0,
+                "totalChunks": 0,
+                "filesGenerated": 0,
+                "chunks": [],
+            },
+        })
+        runs_repo.update_fields(run_id, {"approvalStatus": "failed", "status": "failed"})
     except Exception as err:
         runs_repo.set_error(run_id, str(err))
         patch_detail(run_id, {
@@ -968,7 +1067,6 @@ async def run_agent(run_id: str, auth: dict = Depends(get_auth)):
             },
         })
         runs_repo.update_fields(run_id, {"approvalStatus": "failed", "status": "failed"})
-        raise
 
 
 @router.post("/runs/{run_id}/approve-code")
@@ -1759,9 +1857,8 @@ async def cancel_run(run_id: str, auth: dict = Depends(get_auth)):
     run = _load_workflow_run(run_id, auth)
     if run["status"] in ("done", "cancelled"):
         raise HttpError.bad_request("Run is already finished")
-    deploy_task = _deploy_tasks.pop(run_id, None)
-    if deploy_task and not deploy_task.done():
-        deploy_task.cancel()
+    _cancel_deploy_task(run_id)
+    _cancel_agent_task(run_id)
     detail = load_detail(run_id)
     wf = extract_workflow(detail)
     patch_detail(run_id, {

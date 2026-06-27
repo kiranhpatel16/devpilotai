@@ -8,6 +8,7 @@ import type {
   TaskWorkflowStep,
 } from '@cpwork/shared';
 import { api, getApiErrorMessage, longRequest } from '../../lib/api';
+import { runAgentAndPoll } from '../../lib/runAgentPipeline';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
 import { getDeployBusyDetail } from '../../lib/workflowStatus';
 import { getEffectiveLlm } from '../../lib/effectiveLlm';
@@ -169,9 +170,7 @@ export function WorkflowStepContent({
   });
 
   const runAgentM = useMutation({
-    mutationFn: async () =>
-      (await api.post<{ detail: RunDetail }>(`/workflow/runs/${run.id}/run-agent`, undefined, longRequest))
-        .data.detail,
+    mutationFn: async () => runAgentAndPoll(run.id),
     onMutate: () => setError(null),
     onSuccess: (d) => {
       onChange(d);
