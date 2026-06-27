@@ -7,20 +7,35 @@ import { ConfirmDeleteModal } from '../../components/ConfirmDeleteModal';
 
 type RuleKey = keyof ProjectAiRulesEditable;
 
-const RULE_LABELS: Record<RuleKey, { title: string; hint: string }> = {
+const RULE_LABELS: Record<RuleKey, { title: string; hint: string; usedIn: string }> = {
   implementationQualityRules: {
     title: 'Implementation quality rules',
-    hint: 'Mandatory code quality constraints enforced on agent output (PHPUnit, no stubs, etc.).',
+    hint: 'Mandatory code quality constraints. Embedded into Magento rules via {IMPLEMENTATION_QUALITY_RULES}.',
+    usedIn: 'Merged into coding, planning, architecture, deploy fix, and chat prompts.',
   },
   magentoRules: {
     title: 'Magento / platform rules',
-    hint: 'System prompt for Magento, Hyva, and project conventions. Use {IMPLEMENTATION_QUALITY_RULES} to embed the block above.',
+    hint: 'System prompt for Magento, Hyva, and project conventions. Include {IMPLEMENTATION_QUALITY_RULES} to embed the block above.',
+    usedIn: 'Code generation, implementation plan, architecture, test cases, deploy/test fix, project chat.',
+  },
+  planningRules: {
+    title: 'Planning / requirement analysis rules',
+    hint: 'Analyst persona for requirement analysis. Keep scoped to the Jira ticket — avoid scope creep from unrelated codebase files.',
+    usedIn: 'Requirement analysis step only.',
   },
   agentOutputContract: {
     title: 'Agent output contract',
-    hint: 'JSON response shape and edit rules for agent/deploy_fix modes.',
+    hint: 'JSON response shape and edit rules for the coding agent.',
+    usedIn: 'Code generation (Coding AI) only.',
   },
 };
+
+const RULE_ORDER: RuleKey[] = [
+  'planningRules',
+  'implementationQualityRules',
+  'magentoRules',
+  'agentOutputContract',
+];
 
 export function AdminAiRulesPage() {
   const qc = useQueryClient();
@@ -38,6 +53,14 @@ export function AdminAiRulesPage() {
       (await api.get<{ projects: ProjectAiRulesSummary[] }>('/admin/ai-rules')).data.projects,
   });
 
+  const templatesQ = useQuery({
+    queryKey: ['admin', 'ai-rules', 'templates'],
+    queryFn: async () =>
+      (await api.get<{ templates: { id: string; label: string; description: string }[] }>(
+        '/admin/ai-rules/templates',
+      )).data.templates,
+  });
+
   const rulesQ = useQuery({
     queryKey: ['admin', 'ai-rules', selectedId],
     queryFn: async () =>
@@ -46,6 +69,7 @@ export function AdminAiRulesPage() {
           project: { id: string; name: string; slug: string };
           hasCustomAiRules: boolean;
           usingDefaults: boolean;
+          seededFromTemplate?: string | null;
           rules: ProjectAiRulesEditable;
           defaults: ProjectAiRulesEditable;
         }>(`/admin/ai-rules/${selectedId}`)
@@ -56,8 +80,15 @@ export function AdminAiRulesPage() {
   useEffect(() => {
     if (rulesQ.data && !dirty) {
       setForm(rulesQ.data.rules);
+      if (rulesQ.data.seededFromTemplate) {
+        setSuccess(
+          'Fabric template was applied automatically for this project. Rules are saved and active.',
+        );
+        void qc.invalidateQueries({ queryKey: ['admin', 'ai-rules'] });
+        void qc.invalidateQueries({ queryKey: ['admin', 'projects'] });
+      }
     }
-  }, [rulesQ.data, dirty]);
+  }, [rulesQ.data, dirty, qc]);
 
   useEffect(() => {
     const fromUrl = searchParams.get('project');
@@ -151,19 +182,38 @@ export function AdminAiRulesPage() {
     setForm({
       implementationQualityRules: d.implementationQualityRules,
       magentoRules: d.magentoRules,
+      planningRules: d.planningRules,
       agentOutputContract: d.agentOutputContract,
     });
     setDirty(true);
     setSuccess(null);
   }
 
+  async function applyTemplate(templateId: string) {
+    setError(null);
+    try {
+      const { data } = await api.get<{ rules: ProjectAiRulesEditable }>(
+        `/admin/ai-rules/templates/${templateId}`,
+      );
+      setForm(data.rules);
+      setDirty(true);
+      setSuccess('Template loaded — review and click Save AI rules to apply.');
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    }
+  }
+
+  const missingQualityPlaceholder =
+    !!form?.magentoRules && !form.magentoRules.includes('{IMPLEMENTATION_QUALITY_RULES}');
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold">AI Rules</h1>
         <p className="text-sm text-slate-500">
-          Configure per-project prompt rules for implementation quality, Magento conventions, and agent
-          JSON output. Projects without custom rules use system defaults.
+          Per-project prompts for planning, coding, and analysis. Requirement analysis uses{' '}
+          <strong>Planning rules</strong>; code generation uses <strong>Magento rules</strong> and{' '}
+          <strong>Agent output contract</strong>.
         </p>
       </div>
 
@@ -284,22 +334,42 @@ export function AdminAiRulesPage() {
             {usingDefaults ? (
               <>
                 <strong>Using system defaults.</strong> Save customized rules for{' '}
-                <span className="font-medium">{selected?.name}</span> to override agent behavior for
+                <span className="font-medium">{selected?.name}</span> to override AI behavior for
                 this project.
               </>
             ) : (
               <>
                 <strong>Custom rules active</strong> for{' '}
-                <span className="font-medium">{selected?.name}</span>. All agent runs for this project
-                use these prompts.
+                <span className="font-medium">{selected?.name}</span>. Coding, planning, analysis,
+                deploy fix, and project chat use these prompts for this workspace.
               </>
             )}
           </div>
+
+          {missingQualityPlaceholder && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <strong>Tip:</strong> Magento rules do not include{' '}
+              <code className="rounded bg-amber-100 px-1">{'{IMPLEMENTATION_QUALITY_RULES}'}</code>.
+              Implementation quality rules will not be injected into coding prompts until you add
+              that placeholder.
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn-secondary text-sm" onClick={loadDefaults}>
               Fill from system defaults
             </button>
+            {(templatesQ.data ?? []).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="btn-secondary text-sm"
+                title={t.description}
+                onClick={() => void applyTemplate(t.id)}
+              >
+                Apply {t.label} template
+              </button>
+            ))}
             {rulesQ.data?.hasCustomAiRules && (
               <button
                 type="button"
@@ -312,9 +382,14 @@ export function AdminAiRulesPage() {
           </div>
 
           <div className="space-y-4">
-            {(Object.keys(RULE_LABELS) as RuleKey[]).map((key) => (
+            {RULE_ORDER.map((key) => (
               <section key={key} className="card p-4">
-                <h2 className="font-medium">{RULE_LABELS[key].title}</h2>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h2 className="font-medium">{RULE_LABELS[key].title}</h2>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-neutral-800 dark:text-slate-400">
+                    {RULE_LABELS[key].usedIn}
+                  </span>
+                </div>
                 <p className="mt-1 text-xs text-slate-500">{RULE_LABELS[key].hint}</p>
                 <textarea
                   className="input mt-3 min-h-[200px] w-full resize-y font-mono text-xs leading-relaxed"

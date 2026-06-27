@@ -1,3 +1,5 @@
+import json
+
 DEPLOY_FIX_RULES = """You are fixing a Magento deploy failure (setup:upgrade, compilation, static content deploy, composer, PHP/runtime errors, etc.).
 Rules:
 - Fix ONLY the file(s) named in the deploy error output or PRIMARY FIX TARGETS list — whatever extension they use.
@@ -165,6 +167,46 @@ from services.prompt_budget import (
     trim_text,
 )
 
+REQUIREMENT_ANALYSIS_RULES = """You are a senior product analyst for Magento storefront work.
+Analyze ONLY what the Jira task and developer instructions ask for.
+Rules:
+- Derive functional requirements from the ticket — do not invent unrelated work.
+- Repository map is for naming likely modules/themes — do NOT treat unrelated existing code as new requirements.
+- Flag open questions when scope is unclear instead of guessing implementation details."""
+
+REQUIREMENT_ANALYSIS_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) with keys:
+objective (string — one clear sentence), summary (string — 2-4 short sentences),
+functionalRequirements (array of short strings — one capability per item, start with a verb),
+nonFunctionalRequirements (array of short strings),
+businessImpact (string — 1-2 sentences), impactedModules (array of strings),
+risks (array of {level: low|medium|high, description}),
+likelyFiles (array of repository-relative paths),
+likelyFileStructure (string — ASCII directory tree for likelyFiles using ├── and │),
+assumptions (array of short strings), questions (array of short numbered-ready questions),
+estimatedComplexity ("S" | "M" | "L" | "XL").
+
+Rules:
+- Keep each array item concise (one line, under 120 characters when possible).
+- likelyFileStructure must list the full module/file tree when proposing a new module.
+- questions must be specific and actionable for the developer or PM."""
+
+ARCHITECTURE_DESIGN_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) with keys:
+systemOverview (string),
+moduleFileStructure (string — ASCII directory tree of EVERY file to create or modify; use ├── and │ indentation),
+filesToModify (array of strings — flat list of every repository-relative path from moduleFileStructure),
+databaseImpact (string), apiChanges (array of strings), frontendChanges (array of strings),
+backendChanges (array of strings), dependencyMapping (array of strings),
+risks (array of {level, description}).
+
+Rules:
+- Do NOT include mermaid, class diagrams, or componentDiagram.
+- For new Magento modules, list the full module tree: registration.php, etc/module.xml, etc/di.xml, etc/crontab.xml, Model/, etc/adminhtml/system.xml, Test/Unit/ when PHP classes are added, and theme paths under app/design/ when relevant.
+- filesToModify must include every leaf path from moduleFileStructure."""
+
+TEST_CASES_OUTPUT_CONTRACT = """Respond with ONLY a JSON object (no prose, no markdown fences) with key testCases:
+array of { id (TC-001 format), title, type (functional|ui|validation|regression|negative|edge),
+expected (PASS/FAIL), steps (optional array of strings) }."""
+
 
 def _rules_for_ctx(ctx: dict) -> dict:
     from services.ai_rules import resolve_effective_rules, project_id_from_ctx
@@ -173,6 +215,7 @@ def _rules_for_ctx(ctx: dict) -> dict:
         rules = ctx["aiRules"]
         return {
             "magentoRules": rules["magentoRules"],
+            "planningRules": rules.get("planningRules") or REQUIREMENT_ANALYSIS_RULES,
             "agentOutputContract": rules["agentOutputContract"],
         }
 
@@ -180,6 +223,7 @@ def _rules_for_ctx(ctx: dict) -> dict:
     effective = resolve_effective_rules(project_id)
     return {
         "magentoRules": effective["magentoRules"],
+        "planningRules": effective.get("planningRules") or REQUIREMENT_ANALYSIS_RULES,
         "agentOutputContract": effective["agentOutputContract"],
     }
 
@@ -297,6 +341,7 @@ def build_prompt(ctx: dict) -> dict:
     project = ctx["project"]
     rules = _rules_for_ctx(ctx)
     magento_rules = rules["magentoRules"]
+    planning_rules = rules["planningRules"]
     agent_output_contract = rules["agentOutputContract"]
     project_block_parts = [
         f"Project: {project['name']}",
@@ -551,9 +596,53 @@ def build_prompt(ctx: dict) -> dict:
             "jsonMode": True,
         }
 
+    if mode == "requirement_analysis":
+        return {
+            "system": f"{planning_rules}\n\n{REQUIREMENT_ANALYSIS_OUTPUT_CONTRACT}",
+            "user": (
+                "Analyze the following task and produce a structured requirement analysis. "
+                "Stay scoped to what the ticket asks for.\n\n"
+                f"{common}"
+            ),
+            "jsonMode": True,
+        }
+
+    if mode == "architecture_design":
+        analysis = ctx.get("requirementAnalysis") or {}
+        analysis_block = ""
+        if analysis:
+            analysis_block = (
+                f"\n\nRequirement analysis:\n{trim_text(json.dumps(analysis, indent=2), MAX_PLAN_CHARS)}"
+            )
+        return {
+            "system": f"{magento_rules}\n\n{ARCHITECTURE_DESIGN_OUTPUT_CONTRACT}",
+            "user": (
+                "Design the architecture for this task. Provide a complete module/file structure plan "
+                "(directory tree), not diagrams.\n\n"
+                f"{common}{analysis_block}"
+            ),
+            "jsonMode": True,
+        }
+
+    if mode == "test_cases":
+        plan = trim_text(ctx.get("approvedPlanMarkdown") or ctx.get("planMarkdown") or "", MAX_PLAN_CHARS)
+        plan_block = f"\n\nDevelopment plan:\n{plan}" if plan else ""
+        return {
+            "system": f"{magento_rules}\n\n{TEST_CASES_OUTPUT_CONTRACT}",
+            "user": f"Generate test cases for this task.\n\n{common}{plan_block}",
+            "jsonMode": True,
+        }
+
     if mode == "plan":
         return {
-            "system": f"{magento_rules}\n\nProduce a clear implementation plan. Do NOT write file contents. Use concise markdown with steps and files to touch. End with a browser verification checklist (URLs/sections to check) — do NOT plan PHPUnit test files for Hyvä/theme-only tasks.",
+            "system": (
+                f"{magento_rules}\n\n"
+                "Produce a clear implementation plan. Do NOT write file contents. "
+                "Use concise markdown with steps and files to touch. "
+                "Scope the plan to the Jira task only — do not add unrelated validation or refactors. "
+                "End with a browser verification checklist (URLs/sections to check) — "
+                "do NOT plan PHPUnit test files for Hyvä/theme-only tasks."
+            ),
             "user": f"Create an implementation plan for this task.\n\n{common}",
             "jsonMode": False,
         }

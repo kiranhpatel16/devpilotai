@@ -2,6 +2,7 @@
 
 import json
 import re
+from services.ai_providers.normalize import _extract_json
 from services.ai_service import run_ai
 from services.agents.registry import agent_for_step, AGENT_REGISTRY
 from services.workflow import AGENT_PROGRESS_STEPS, DEV_AGENT_OPTIONS
@@ -31,51 +32,84 @@ class AgentOrchestrator:
         return await run_ai(provider, model, ctx)
 
     async def _run_analysis(self, provider: str, model: str | None, ctx: dict) -> dict:
-        ctx["mode"] = "plan"
-        ctx["userInstructions"] = (
-            (ctx.get("userInstructions") or "")
-            + "\n\nProduce a JSON requirement analysis with keys: "
-            "objective, summary, functionalRequirements (array), nonFunctionalRequirements (array), "
-            "businessImpact, impactedModules (array), "
-            "risks (array of {level, description}), likelyFiles (array), "
-            "assumptions (array), questions (array), "
-            "estimatedComplexity (S|M|L|XL). Return ONLY valid JSON."
-        )
+        ctx["mode"] = "requirement_analysis"
         result = await run_ai(provider, model, ctx)
         output = result["output"]
         text = output.get("text") or output.get("summary") or ""
-        analysis = self._parse_json(text, self._default_analysis(text))
+        analysis = self._parse_analysis(text)
         result["requirementAnalysis"] = analysis
-        result["analysis"] = analysis
         return result
 
     async def _run_architecture(self, provider: str, model: str | None, ctx: dict) -> dict:
-        ctx["mode"] = "plan"
-        analysis = ctx.get("requirementAnalysis") or {}
-        ctx["userInstructions"] = (
-            (ctx.get("userInstructions") or "")
-            + f"\n\nRequirement analysis:\n{json.dumps(analysis, indent=2)[:4000]}"
-            + "\n\nProduce JSON architecture design with keys: "
-            "systemOverview, filesToModify (array), componentDiagram (mermaid or text), "
-            "databaseImpact, apiChanges (array), frontendChanges (array), backendChanges (array), "
-            "dependencyMapping (array), risks (array of {level, description}). Return ONLY valid JSON."
-        )
+        ctx["mode"] = "architecture_design"
         result = await run_ai(provider, model, ctx)
         text = (result["output"].get("text") or result["output"].get("summary") or "")
-        design = self._parse_json(text, {"systemOverview": text[:2000] if text else "Pending"})
+        design = self._normalize_architecture(self._parse_json(text, {"systemOverview": text[:2000] if text else "Pending"}))
         result["architectureDesign"] = design
         return result
 
+    def _normalize_architecture(self, design: dict) -> dict:
+        out = dict(design)
+        out.pop("componentDiagram", None)
+        structure = (out.get("moduleFileStructure") or "").strip()
+        files = out.get("filesToModify")
+        if not isinstance(files, list):
+            files = []
+        files = [str(f).strip() for f in files if str(f).strip()]
+        if not structure and files:
+            out["moduleFileStructure"] = self._paths_to_tree(files)
+        elif structure and not files:
+            out["filesToModify"] = self._paths_from_tree(structure)
+        else:
+            out["filesToModify"] = files
+        return out
+
+    def _paths_to_tree(self, paths: list[str]) -> str:
+        sorted_paths = sorted({p.replace("\\", "/") for p in paths})
+        if not sorted_paths:
+            return ""
+        roots: dict[str, list[str]] = {}
+        for path in sorted_paths:
+            if "/" not in path:
+                roots.setdefault(".", []).append(path)
+                continue
+            root, rest = path.split("/", 1)
+            roots.setdefault(root, []).append(rest)
+        lines: list[str] = []
+        for root in sorted(roots):
+            if root == ".":
+                for name in sorted(roots[root]):
+                    lines.append(name)
+                continue
+            lines.append(f"{root}/")
+            grouped: dict[str, list[str]] = {}
+            for rest in roots[root]:
+                if "/" in rest:
+                    subdir, leaf = rest.rsplit("/", 1)
+                    grouped.setdefault(subdir, []).append(leaf)
+                else:
+                    grouped.setdefault(".", []).append(rest)
+            for subdir in sorted(grouped):
+                if subdir != ".":
+                    lines.append(f"├── {subdir}/")
+                for leaf in sorted(grouped[subdir]):
+                    lines.append(f"│   ├── {leaf}")
+        return "\n".join(lines)
+
+    def _paths_from_tree(self, structure: str) -> list[str]:
+        paths: list[str] = []
+        for line in structure.splitlines():
+            match = re.search(r"\(([^)]+)\)\s*$", line.strip())
+            if match:
+                paths.append(match.group(1).strip())
+                continue
+            if line.strip().startswith("app/"):
+                paths.append(line.strip())
+        return paths
+
     async def _run_test_cases(self, provider: str, model: str | None, ctx: dict) -> dict:
-        ctx["mode"] = "plan"
+        ctx["mode"] = "test_cases"
         plan = (ctx.get("approvedPlanMarkdown") or ctx.get("planMarkdown") or "")[:3000]
-        ctx["userInstructions"] = (
-            (ctx.get("userInstructions") or "")
-            + f"\n\nDevelopment plan:\n{plan}"
-            + "\n\nProduce JSON with key testCases: array of "
-            "{ id (TC-001 format), title, type (functional|ui|validation|regression|negative|edge), "
-            "expected (PASS/FAIL), steps (optional) }. Return ONLY valid JSON."
-        )
         result = await run_ai(provider, model, ctx)
         text = (result["output"].get("text") or result["output"].get("summary") or "")
         parsed = self._parse_json(text, {})
@@ -139,28 +173,67 @@ class AgentOrchestrator:
         return result
 
     def _parse_json(self, text: str, default: dict) -> dict:
+        json_str = _extract_json(text or "")
+        if not json_str:
+            return default
         try:
-            match = re.search(r"\{[\s\S]*\}", text)
-            if match:
-                return json.loads(match.group(0))
+            parsed = json.loads(json_str)
+            if isinstance(parsed, dict):
+                return parsed
         except Exception:
             pass
         return default
 
-    def _default_analysis(self, text: str) -> dict:
-        return {
-            "summary": text[:500] if text else "Analysis pending",
-            "objective": text[:200] if text else "",
+    def _parse_analysis(self, text: str) -> dict:
+        parsed = self._parse_json(text, {})
+        if parsed.get("objective") or parsed.get("summary") or parsed.get("functionalRequirements"):
+            return self._normalize_requirement_analysis(parsed)
+        snippet = (text or "").strip()
+        if snippet:
+            raise ValueError(
+                "Requirement analysis did not return valid JSON. "
+                "Regenerate or switch the planning AI provider."
+            )
+        return self._normalize_requirement_analysis({
+            "summary": "Analysis pending",
+            "objective": "",
             "functionalRequirements": [],
             "nonFunctionalRequirements": [],
-            "businessImpact": "To be determined",
+            "businessImpact": "",
             "impactedModules": [],
-            "risks": [{"level": "medium", "description": "Standard implementation risk"}],
+            "risks": [],
             "likelyFiles": [],
             "assumptions": [],
             "questions": [],
             "estimatedComplexity": "M",
-        }
+        })
+
+    def _normalize_requirement_analysis(self, analysis: dict) -> dict:
+        out = dict(analysis)
+        for key in ("objective", "summary", "businessImpact"):
+            value = out.get(key)
+            if isinstance(value, str) and value.strip().startswith("{"):
+                try:
+                    nested = json.loads(value)
+                    if isinstance(nested, dict):
+                        if key == "objective" and isinstance(nested.get("objective"), str):
+                            out[key] = nested["objective"]
+                        elif isinstance(nested.get("summary"), str):
+                            out[key] = nested["summary"]
+                except Exception:
+                    pass
+        structure = (out.get("likelyFileStructure") or "").strip()
+        files = out.get("likelyFiles")
+        if not isinstance(files, list):
+            files = []
+        files = [str(f).strip() for f in files if str(f).strip()]
+        if structure and not files:
+            out["likelyFiles"] = self._paths_from_tree(structure)
+        else:
+            out["likelyFiles"] = files
+        if structure:
+            out["likelyFileStructure"] = structure
+        return out
 
 
 orchestrator = AgentOrchestrator()

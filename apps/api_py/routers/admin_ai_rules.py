@@ -7,6 +7,7 @@ from db.projects import projects_repo
 from db.project_ai_rules import project_ai_rules_repo
 from db.activities import activities_repo
 from services.ai_rules import get_default_rules, resolve_effective_rules, get_editable_magento_template
+from services.ai_rule_templates import get_template, list_templates, ensure_auto_template_for_project
 
 router = APIRouter(prefix="/api/admin/ai-rules", tags=["admin-ai-rules"])
 
@@ -14,7 +15,21 @@ router = APIRouter(prefix="/api/admin/ai-rules", tags=["admin-ai-rules"])
 class UpsertAiRulesBody(BaseModel):
     implementationQualityRules: Optional[str] = None
     magentoRules: Optional[str] = None
+    planningRules: Optional[str] = None
     agentOutputContract: Optional[str] = None
+
+
+@router.get("/templates")
+async def get_rule_templates(auth: dict = Depends(require_admin)):
+    return {"templates": list_templates()}
+
+
+@router.get("/templates/{template_id}")
+async def get_rule_template(template_id: str, auth: dict = Depends(require_admin)):
+    template = get_template(template_id)
+    if not template:
+        raise HttpError.not_found("Template not found")
+    return {"id": template_id, "rules": template}
 
 
 @router.get("/defaults")
@@ -43,6 +58,8 @@ async def get_project_rules(project_id: str, auth: dict = Depends(require_admin)
     if not project:
         raise HttpError.not_found("Project not found")
 
+    seeded_from = ensure_auto_template_for_project(project_id)
+
     defaults = get_default_rules()
     custom = project_ai_rules_repo.find_by_project_id(project_id)
     effective = resolve_effective_rules(project_id)
@@ -51,12 +68,14 @@ async def get_project_rules(project_id: str, auth: dict = Depends(require_admin)
         editable = {
             "implementationQualityRules": custom.get("implementationQualityRules") or defaults["implementationQualityRules"],
             "magentoRules": get_editable_magento_template(custom.get("magentoRules")),
+            "planningRules": custom.get("planningRules") or defaults["planningRules"],
             "agentOutputContract": custom.get("agentOutputContract") or defaults["agentOutputContract"],
         }
     else:
         editable = {
             "implementationQualityRules": defaults["implementationQualityRules"],
             "magentoRules": defaults["magentoRules"],
+            "planningRules": defaults["planningRules"],
             "agentOutputContract": defaults["agentOutputContract"],
         }
 
@@ -64,6 +83,7 @@ async def get_project_rules(project_id: str, auth: dict = Depends(require_admin)
         "project": {"id": project["id"], "name": project["name"], "slug": project["slug"]},
         "hasCustomAiRules": effective["hasCustomRules"],
         "usingDefaults": effective["usingDefaults"],
+        "seededFromTemplate": seeded_from,
         "rules": editable,
         "defaults": defaults,
         "customRecord": custom,
@@ -83,16 +103,18 @@ async def upsert_project_rules(
     defaults = get_default_rules()
     impl = body.implementationQualityRules
     magento = body.magentoRules
+    planning = body.planningRules
     contract = body.agentOutputContract
 
-    if not any([impl, magento, contract]):
+    if not any([impl, magento, planning, contract]):
         raise HttpError.bad_request(
-            "Provide at least one rule field (implementationQualityRules, magentoRules, or agentOutputContract)"
+            "Provide at least one rule field (implementationQualityRules, magentoRules, planningRules, or agentOutputContract)"
         )
 
     saved = project_ai_rules_repo.upsert(project_id, {
         "implementationQualityRules": impl if impl is not None else defaults["implementationQualityRules"],
         "magentoRules": magento if magento is not None else defaults["magentoRules"],
+        "planningRules": planning if planning is not None else defaults["planningRules"],
         "agentOutputContract": contract if contract is not None else defaults["agentOutputContract"],
     })
 

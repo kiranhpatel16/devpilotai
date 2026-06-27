@@ -128,10 +128,18 @@ def _score_by_path(rel_path: str, keywords: list[str], active_theme: str | None)
     return score
 
 
-def build_repo_context(cwd: str, task_text: str, active_theme: str | None = None) -> dict:
+def build_repo_context(
+    cwd: str,
+    task_text: str,
+    active_theme: str | None = None,
+    *,
+    include_excerpts: bool = True,
+) -> dict:
     overview = _build_overview(cwd, active_theme)
-    keywords = extract_keywords(task_text)
+    if not include_excerpts:
+        return {"overview": overview, "excerpts": []}
 
+    keywords = extract_keywords(task_text)
     if not keywords:
         return {"overview": overview, "excerpts": []}
 
@@ -249,8 +257,11 @@ def enrich_repo_context(
     *,
     plan_markdown: str | None = None,
     prior_output: dict | None = None,
+    include_excerpts: bool = True,
 ) -> dict:
-    base = build_repo_context(cwd, task_text, active_theme)
+    base = build_repo_context(cwd, task_text, active_theme, include_excerpts=include_excerpts)
+    if not include_excerpts:
+        return base
     module_text = " ".join(filter(None, [task_text, plan_markdown or ""]))
     extra = gather_module_excerpts(cwd, module_text)
     output_excerpts = gather_output_excerpts(cwd, prior_output)

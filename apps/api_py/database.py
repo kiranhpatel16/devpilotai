@@ -207,6 +207,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     if "llm_config_json" not in proj_cols:
         conn.execute("ALTER TABLE projects ADD COLUMN llm_config_json TEXT")
+    rules_cols = {row[1] for row in conn.execute("PRAGMA table_info(project_ai_rules)")}
+    if "planning_rules" not in rules_cols:
+        conn.execute("ALTER TABLE project_ai_rules ADD COLUMN planning_rules TEXT")
     conn.commit()
 
 

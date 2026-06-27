@@ -247,12 +247,14 @@ async def _build_ai_context(run: dict, detail: dict, resolved: dict, *, fresh_pi
     ]))
     plan_markdown = None if fresh_pipeline else detail.get("planMarkdown")
     prior_output = None if fresh_pipeline else detail.get("output")
+    include_excerpts = not fresh_pipeline
     repo = enrich_repo_context(
         resolved["cwd"],
         task_text,
         resolved["project"].get("frontendTheme"),
         plan_markdown=plan_markdown,
         prior_output=prior_output,
+        include_excerpts=include_excerpts,
     )
     knowledge_chunks = []
     try:

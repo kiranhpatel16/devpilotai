@@ -112,6 +112,7 @@ export interface ProjectAiRules {
   projectId: string;
   implementationQualityRules: string | null;
   magentoRules: string | null;
+  planningRules: string | null;
   agentOutputContract: string | null;
   createdAt: string;
   updatedAt: string;
@@ -120,6 +121,7 @@ export interface ProjectAiRules {
 export interface ProjectAiRulesEditable {
   implementationQualityRules: string;
   magentoRules: string;
+  planningRules: string;
   agentOutputContract: string;
 }
 
@@ -542,12 +544,17 @@ export interface RequirementAnalysis {
   risks?: Array<{ level: string; description: string }>;
   assumptions?: string[];
   questions?: string[];
+  /** ASCII tree of likely files — preferred for display. */
+  likelyFileStructure?: string;
   estimatedComplexity?: 'S' | 'M' | 'L' | 'XL' | string;
 }
 
 export interface ArchitectureDesign {
   systemOverview?: string;
+  /** ASCII directory tree of files to create or modify. */
+  moduleFileStructure?: string;
   filesToModify?: string[];
+  /** @deprecated Legacy field — no longer generated; use moduleFileStructure. */
   componentDiagram?: string;
   databaseImpact?: string;
   apiChanges?: string[];

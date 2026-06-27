@@ -7,6 +7,11 @@ import type {
 } from '@cpwork/shared';
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
+import {
+  buildLikelyFilesTree,
+  normalizeAnalysisText,
+  riskLevelClass,
+} from '../../lib/formatRequirementAnalysis';
 import { taskBody, taskMuted, taskPanel, taskPanelHeader, taskStrong, taskTitle } from './taskStyles';
 
 function CollapsibleArtifact({
@@ -56,92 +61,133 @@ function ComplexityBadge({ value }: { value?: string }) {
   );
 }
 
+function AnalysisSection({
+  title,
+  children,
+  variant = 'default',
+}: {
+  title: string;
+  children: React.ReactNode;
+  variant?: 'default' | 'highlight' | 'warning';
+}) {
+  const border =
+    variant === 'warning'
+      ? 'border-amber-500/30 bg-amber-500/5'
+      : variant === 'highlight'
+        ? 'border-slate-600/50 bg-slate-900/30'
+        : 'border-slate-700/40 bg-slate-900/20';
+  return (
+    <section className={`rounded-lg border p-3 ${border}`}>
+      <p className={`mb-2 text-xs font-semibold uppercase tracking-wide ${taskMuted}`}>{title}</p>
+      {children}
+    </section>
+  );
+}
+
+function RequirementList({ items }: { items: string[] }) {
+  return (
+    <ul className="list-disc space-y-2 pl-5">
+      {items.map((item, i) => (
+        <li key={i} className={`${taskBody} leading-relaxed`}>
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function RequirementAnalysisBody({
   analysis,
 }: {
   analysis: RequirementAnalysis;
 }) {
+  const objective = normalizeAnalysisText(analysis.objective);
+  const summary = normalizeAnalysisText(analysis.summary);
+  const fileTree =
+    analysis.likelyFileStructure?.trim() || buildLikelyFilesTree(analysis.likelyFiles);
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <ComplexityBadge value={analysis.estimatedComplexity} />
-        {analysis.objective && (
-          <span className={`text-xs ${taskMuted}`}>Objective defined</span>
-        )}
+        {analysis.impactedModules?.length ? (
+          <span className={`text-xs ${taskMuted}`}>
+            Modules: {analysis.impactedModules.join(', ')}
+          </span>
+        ) : null}
       </div>
-      {analysis.objective && (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Objective</p>
-          <p className={taskBody}>{analysis.objective}</p>
-        </div>
+
+      {objective && (
+        <AnalysisSection title="Objective">
+          <p className={`${taskBody} text-base leading-relaxed`}>{objective}</p>
+        </AnalysisSection>
       )}
-      {analysis.summary && (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Summary</p>
-          <p className={taskBody}>{analysis.summary}</p>
-        </div>
+
+      {summary && (
+        <AnalysisSection title="Summary">
+          <p className={`${taskBody} leading-relaxed`}>{summary}</p>
+        </AnalysisSection>
       )}
+
       {analysis.functionalRequirements?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Functional requirements</p>
-          <ul className="list-inside list-disc space-y-1">
-            {analysis.functionalRequirements.map((r, i) => (
-              <li key={i} className={taskBody}>{r}</li>
-            ))}
-          </ul>
-        </div>
+        <AnalysisSection title="Functional requirements">
+          <RequirementList items={analysis.functionalRequirements} />
+        </AnalysisSection>
       ) : null}
+
       {analysis.nonFunctionalRequirements?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Non-functional requirements</p>
-          <ul className="list-inside list-disc space-y-1">
-            {analysis.nonFunctionalRequirements.map((r, i) => (
-              <li key={i} className={taskBody}>{r}</li>
-            ))}
-          </ul>
-        </div>
+        <AnalysisSection title="Non-functional requirements">
+          <RequirementList items={analysis.nonFunctionalRequirements} />
+        </AnalysisSection>
       ) : null}
-      {analysis.likelyFiles?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Files likely to change</p>
-          <ul className="font-mono text-xs text-slate-300">
-            {analysis.likelyFiles.map((f) => (
-              <li key={f}>{f}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+
+      {analysis.businessImpact && (
+        <AnalysisSection title="Business impact">
+          <p className={`${taskBody} leading-relaxed`}>{analysis.businessImpact}</p>
+        </AnalysisSection>
+      )}
+
+      {fileTree && (
+        <AnalysisSection title="Files likely to change" variant="highlight">
+          <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-slate-200 whitespace-pre-wrap">
+            {fileTree}
+          </pre>
+        </AnalysisSection>
+      )}
+
       {analysis.risks?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Risks</p>
-          <ul className="space-y-1">
+        <AnalysisSection title="Risks">
+          <ul className="space-y-2">
             {analysis.risks.map((r, i) => (
-              <li key={i} className="text-xs">
-                <span className={taskStrong}>{r.level}</span>: {r.description}
+              <li key={i} className="flex gap-2 text-sm leading-relaxed">
+                <span
+                  className={`mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${riskLevelClass(r.level)}`}
+                >
+                  {r.level}
+                </span>
+                <span className={taskBody}>{r.description}</span>
               </li>
             ))}
           </ul>
-        </div>
+        </AnalysisSection>
       ) : null}
+
       {analysis.assumptions?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Assumptions</p>
-          <ul className="list-inside list-disc space-y-1">
-            {analysis.assumptions.map((a, i) => (
-              <li key={i} className={taskBody}>{a}</li>
-            ))}
-          </ul>
-        </div>
+        <AnalysisSection title="Assumptions">
+          <RequirementList items={analysis.assumptions} />
+        </AnalysisSection>
       ) : null}
+
       {analysis.questions?.length ? (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Questions</p>
-          <ul className="list-inside list-disc text-amber-200/90">
+        <AnalysisSection title="Questions" variant="warning">
+          <ol className="list-decimal space-y-2 pl-5">
             {analysis.questions.map((q, i) => (
-              <li key={i}>{q}</li>
+              <li key={i} className={`${taskBody} leading-relaxed text-amber-100/95`}>
+                {q.replace(/^\d+[\.\)]\s*/, '')}
+              </li>
             ))}
-          </ul>
-        </div>
+          </ol>
+        </AnalysisSection>
       ) : null}
     </div>
   );
@@ -202,18 +248,23 @@ export function ArchitectureDesignBody({ design }: { design: ArchitectureDesign 
           <p className={`whitespace-pre-wrap ${taskBody}`}>{design.systemOverview}</p>
         </div>
       )}
-      {design.filesToModify?.length ? (
+      {design.moduleFileStructure ? (
         <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Files to modify</p>
-          <ul className="font-mono text-xs">{design.filesToModify.map((f) => <li key={f}>{f}</li>)}</ul>
+          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Module file structure</p>
+          <pre className="overflow-x-auto rounded bg-slate-900/60 p-3 font-mono text-xs leading-relaxed text-slate-200">
+            {design.moduleFileStructure}
+          </pre>
+        </div>
+      ) : design.filesToModify?.length ? (
+        <div>
+          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Module file structure</p>
+          <ul className="font-mono text-xs text-slate-300">
+            {design.filesToModify.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
         </div>
       ) : null}
-      {design.componentDiagram && (
-        <div>
-          <p className={`text-xs font-medium uppercase ${taskMuted}`}>Component diagram</p>
-          <pre className="overflow-x-auto rounded bg-slate-900/60 p-3 text-xs">{design.componentDiagram}</pre>
-        </div>
-      )}
       {design.databaseImpact && (
         <div>
           <p className={`text-xs font-medium uppercase ${taskMuted}`}>Database impact</p>
