@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { AiProviderInfo, JiraIssueDetail, Project, RunDetail } from '@cpwork/shared';
-import { ArrowRight, Loader2 } from 'lucide-react';
+import { ArrowRight, Loader2, RefreshCw } from 'lucide-react';
 import { getApiErrorMessage } from '../../lib/api';
+import { getCodingLlm, getPlanningLlm } from '../../lib/effectiveLlm';
+import { regenerateRequirementAnalysis } from '../../lib/regenerateRequirementAnalysis';
 import { useWorkflowBusy } from '../../context/WorkflowBusyContext';
-import { advanceToPlanAndGenerate, isEarlyWorkflowStep } from '../../lib/workflowAdvance';
+import { isEarlyWorkflowStep } from '../../lib/workflowAdvance';
+import { artifactsMatchTask } from '../../lib/workflowTaskMatch';
+import { migrateStep } from '../task-workflow/constants';
 import { resolveAcceptanceCriteria } from '../../lib/parseAcceptanceCriteria';
 import { AcceptanceCriteriaPanel } from './AcceptanceCriteriaPanel';
 import { AttachmentsPanel } from './AttachmentsPanel';
@@ -48,7 +52,8 @@ export function RequirementsStepPanel({
   const taskKey = detail?.run.jiraKey ?? selectedKey;
   const attachments = issue?.attachments ?? wf?.jiraSnapshot?.attachments ?? [];
   const earlyStep = isEarlyWorkflowStep(wf?.currentStep);
-  const setupComplete = !!detail && !earlyStep;
+  const step = wf ? migrateStep(wf.currentStep) : null;
+  const setupComplete = !!detail && step !== 'select' && step !== 'requirement_analysis';
 
   const [notes, setNotes] = useState(() => {
     if (detail?.run.id) return detail.run.userInstructions ?? '';
@@ -57,10 +62,18 @@ export function RequirementsStepPanel({
   const [branchName, setBranchName] = useState(
     detail?.run.branchName ?? taskKey ?? '',
   );
-  const [provider, setProvider] = useState(
-    detail?.run.provider ?? providers[0]?.id ?? '',
+  const [planningProvider, setPlanningProvider] = useState(
+    () => getPlanningLlm(detail, project, providers).provider ?? providers[0]?.id ?? '',
   );
-  const [model, setModel] = useState(detail?.run.model ?? '');
+  const [planningModel, setPlanningModel] = useState(
+    () => getPlanningLlm(detail, project, providers).model ?? '',
+  );
+  const [codingProvider, setCodingProvider] = useState(
+    () => getCodingLlm(detail, project, providers).provider ?? providers[0]?.id ?? '',
+  );
+  const [codingModel, setCodingModel] = useState(
+    () => getCodingLlm(detail, project, providers).model ?? '',
+  );
 
   useEffect(() => {
     if (!detail) {
@@ -73,49 +86,69 @@ export function RequirementsStepPanel({
       if (prev.trim()) return prev;
       return loadStoredNotes(taskKey, detail.run.id);
     });
-    const p = detail.run.provider ?? providers[0]?.id ?? '';
+    const planning = getPlanningLlm(detail, project, providers);
+    const coding = getCodingLlm(detail, project, providers);
     setBranchName(detail.run.branchName ?? taskKey ?? '');
-    setProvider(p);
-    setModel(detail.run.model ?? providers.find((x) => x.id === p)?.defaultModel ?? '');
-  }, [detail?.run.id, taskKey, providers]);
+    setPlanningProvider(planning.provider ?? providers[0]?.id ?? '');
+    setPlanningModel(planning.model ?? '');
+    setCodingProvider(coding.provider ?? providers[0]?.id ?? '');
+    setCodingModel(coding.model ?? '');
+  }, [detail?.run.id, taskKey, providers, project]);
 
   const generateM = useMutation({
     mutationFn: async () => {
-      if (!detail) throw new Error('Start the task before generating a plan.');
-      return advanceToPlanAndGenerate(detail, {
-        branchName: branchName.trim(),
-        provider: provider || null,
-        model: model || null,
-        userInstructions: notes.trim() || null,
-      });
+      if (!detail) throw new Error('Start the task before continuing.');
+      const runId = detail.run.id;
+      const needsAnalysis =
+        !detail.workflow?.requirementAnalysis || !artifactsMatchTask(detail);
+      if (needsAnalysis) {
+        return regenerateRequirementAnalysis(runId);
+      }
+      return detail;
     },
     onSuccess: (d) => {
       onChange(d);
-      onWorkflowTabChange('plan');
+      onWorkflowTabChange('setup');
     },
     onError: (err) => onError(getApiErrorMessage(err)),
   });
 
   useWorkflowBusy(
-    'generate-plan',
+    'generate-analysis',
     generateM.isPending,
-    'Generating plan…',
-    'Saving branch and AI settings, then the Planner Agent writes your implementation plan. This may take 1–3 minutes.',
+    'Analyzing requirements…',
+    'Reading task, knowledge base, and codebase to produce requirement analysis.',
   );
 
-  const activeProvider = providers.find((p) => p.id === provider) ?? providers[0];
+  const regenM = useMutation({
+    mutationFn: () => {
+      if (!detail) throw new Error('Start the task before continuing.');
+      return regenerateRequirementAnalysis(detail.run.id);
+    },
+    onSuccess: (d) => onChange(d),
+    onError: (err) => onError(getApiErrorMessage(err)),
+  });
+
+  useWorkflowBusy(
+    'regenerate-analysis-manual',
+    regenM.isPending,
+    'Regenerating requirement analysis…',
+    'Refreshing Jira details and generating a new analysis for this task.',
+  );
+
+  const activePlanningProvider =
+    providers.find((p) => p.id === planningProvider) ?? providers[0];
   const acceptanceCriteria = resolveAcceptanceCriteria(
     issue?.description,
     wf?.customRequirements,
   );
-  const canGenerate =
-    !!detail &&
-    earlyStep &&
-    !!branchName.trim() &&
-    !!provider &&
-    !!(model || activeProvider?.defaultModel);
+  const canGenerate = !!detail && (step === 'select' || step === 'requirement_analysis');
+  const hasValidAnalysis =
+    !!detail?.workflow?.requirementAnalysis && artifactsMatchTask(detail);
+  const staleAnalysis =
+    !!detail?.workflow?.requirementAnalysis && !artifactsMatchTask(detail);
 
-  const showGenerateFooter = !!(detail && earlyStep);
+  const showGenerateFooter = !!(detail && canGenerate);
   const columnScrollMax = showGenerateFooter
     ? 'lg:max-h-[calc(100vh-21rem)]'
     : 'lg:max-h-[calc(100vh-18rem)]';
@@ -129,7 +162,7 @@ export function RequirementsStepPanel({
   return (
     <div className="flex min-h-0 flex-col gap-3">
       <div className="shrink-0 space-y-2">
-        <ProgressStrip detail={detail} preStart={preStart} />
+        <ProgressStrip detail={detail} preStart={preStart} project={project} providers={providers} />
         {preStart && (
           <p className={`text-sm ${taskMuted}`}>
             Use <strong className={taskStrong}>Start Task</strong> in the header to configure
@@ -175,20 +208,28 @@ export function RequirementsStepPanel({
             </div>
           )}
 
-          {detail && earlyStep && providers.length > 0 && (
+          {detail && earlyStep && providers.length > 0 && step === 'environment_setup' && (
             <BranchSetupPanel
               project={project}
               providers={providers}
               branchName={branchName}
-              provider={provider}
-              model={model || activeProvider?.defaultModel || ''}
+              planningProvider={planningProvider}
+              planningModel={planningModel || activePlanningProvider?.defaultModel || ''}
+              codingProvider={codingProvider}
+              codingModel={codingModel}
               onBranchNameChange={setBranchName}
-              onProviderChange={(id) => {
-                setProvider(id);
+              onPlanningProviderChange={(id) => {
+                setPlanningProvider(id);
                 const next = providers.find((p) => p.id === id);
-                setModel(next?.defaultModel ?? '');
+                setPlanningModel(next?.defaultModel ?? '');
               }}
-              onModelChange={setModel}
+              onPlanningModelChange={setPlanningModel}
+              onCodingProviderChange={(id) => {
+                setCodingProvider(id);
+                const next = providers.find((p) => p.id === id);
+                setCodingModel(next?.defaultModel ?? '');
+              }}
+              onCodingModelChange={setCodingModel}
             />
           )}
 
@@ -198,9 +239,9 @@ export function RequirementsStepPanel({
               <button
                 type="button"
                 className="font-medium underline hover:text-emerald-100"
-                onClick={() => onWorkflowTabChange('plan')}
+                onClick={() => onWorkflowTabChange('setup')}
               >
-                View plan →
+                Continue to setup →
               </button>
             </div>
           )}
@@ -208,21 +249,41 @@ export function RequirementsStepPanel({
       </div>
 
       {showGenerateFooter && (
-        <div className="sticky bottom-0 z-10 mt-1 flex shrink-0 justify-end border-t border-slate-200 bg-white/95 py-3 backdrop-blur-sm dark:border-neutral-800/60 dark:bg-[#0a0a0a]/95">
+        <div className="sticky bottom-0 z-10 mt-1 flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-white/95 py-3 backdrop-blur-sm dark:border-neutral-800/60 dark:bg-[#0a0a0a]/95">
+          {hasValidAnalysis && (
+            <button
+              type="button"
+              className="btn-secondary inline-flex items-center gap-2"
+              disabled={regenM.isPending || generateM.isPending}
+              onClick={() => regenM.mutate()}
+            >
+              {regenM.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Regenerate analysis
+            </button>
+          )}
           <button
             type="button"
             className={taskBtnPrimary}
-            disabled={!canGenerate || generateM.isPending}
+            disabled={!canGenerate || generateM.isPending || regenM.isPending || staleAnalysis}
             onClick={() => generateM.mutate()}
           >
             {generateM.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Generating plan…
+                Analyzing…
+              </>
+            ) : hasValidAnalysis ? (
+              <>
+                Continue to setup
+                <ArrowRight className="h-4 w-4" />
               </>
             ) : (
               <>
-                Generate plan
+                Next — requirement analysis
                 <ArrowRight className="h-4 w-4" />
               </>
             )}

@@ -22,6 +22,7 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
 
     total_input_tokens = 0
     total_output_tokens = 0
+    finish_reason = None
     started = time.time()
     last_output: dict | None = None
     blocking_errors: list[str] = []
@@ -48,14 +49,26 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
                 attempt_ctx["priorOutput"] = last_output
 
         prompt = build_prompt(attempt_ctx)
-        result = await adapter["chat"](creds, {
+        chat_req = {
             "system": prompt["system"],
             "user": prompt["user"],
             "model": model,
             "jsonMode": prompt["jsonMode"],
-        })
+        }
+        if ctx.get("cwd"):
+            chat_req["cwd"] = ctx["cwd"]
+        if ctx.get("llmMaxTokens") is not None:
+            chat_req["maxTokens"] = ctx["llmMaxTokens"]
+        if ctx.get("llmTemperature") is not None:
+            chat_req["temperature"] = ctx["llmTemperature"]
+        if ctx.get("llmTopP") is not None:
+            chat_req["topP"] = ctx["llmTopP"]
+        if ctx.get("llmJsonMode") is not None and prompt["jsonMode"]:
+            chat_req["jsonMode"] = bool(ctx["llmJsonMode"])
+        result = await adapter["chat"](creds, chat_req)
         total_input_tokens += result.get("inputTokens") or 0
         total_output_tokens += result.get("outputTokens") or 0
+        finish_reason = result.get("finishReason")
 
         output = normalize_agent_output(result["content"])
         cwd = ctx.get("cwd")
@@ -129,6 +142,7 @@ async def run_ai(provider_id: str, model_override: str | None, ctx: dict) -> dic
             "outputTokens": total_output_tokens or None,
             "latencyMs": latency_ms,
         },
+        "finishReason": finish_reason,
         "validation": {
             "blocking": blocking_errors,
             "warnings": warnings,

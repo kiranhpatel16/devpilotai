@@ -7,20 +7,35 @@ import { ConfirmDeleteModal } from '../../components/ConfirmDeleteModal';
 
 type RuleKey = keyof ProjectAiRulesEditable;
 
-const RULE_LABELS: Record<RuleKey, { title: string; hint: string }> = {
+const RULE_LABELS: Record<RuleKey, { title: string; hint: string; usedIn: string }> = {
   implementationQualityRules: {
     title: 'Implementation quality rules',
-    hint: 'Mandatory code quality constraints enforced on agent output (PHPUnit, no stubs, etc.).',
+    hint: 'Mandatory code quality constraints. Embedded into Magento rules via {IMPLEMENTATION_QUALITY_RULES}.',
+    usedIn: 'Merged into coding, planning, architecture, deploy fix, and chat prompts.',
   },
   magentoRules: {
     title: 'Magento / platform rules',
-    hint: 'System prompt for Magento, Hyva, and project conventions. Use {IMPLEMENTATION_QUALITY_RULES} to embed the block above.',
+    hint: 'System prompt for Magento, Hyva, and project conventions. Include {IMPLEMENTATION_QUALITY_RULES} to embed the block above.',
+    usedIn: 'Code generation, implementation plan, architecture, test cases, deploy/test fix, project chat.',
+  },
+  planningRules: {
+    title: 'Planning / requirement analysis rules',
+    hint: 'Analyst persona for requirement analysis. Keep scoped to the Jira ticket — avoid scope creep from unrelated codebase files.',
+    usedIn: 'Requirement analysis step only.',
   },
   agentOutputContract: {
     title: 'Agent output contract',
-    hint: 'JSON response shape and edit rules for agent/deploy_fix modes.',
+    hint: 'JSON response shape and edit rules for the coding agent.',
+    usedIn: 'Code generation (Coding AI) only.',
   },
 };
+
+const RULE_ORDER: RuleKey[] = [
+  'planningRules',
+  'implementationQualityRules',
+  'magentoRules',
+  'agentOutputContract',
+];
 
 export function AdminAiRulesPage() {
   const qc = useQueryClient();
@@ -30,12 +45,20 @@ export function AdminAiRulesPage() {
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectAiRulesSummary | null>(null);
 
   const listQ = useQuery({
     queryKey: ['admin', 'ai-rules'],
     queryFn: async () =>
       (await api.get<{ projects: ProjectAiRulesSummary[] }>('/admin/ai-rules')).data.projects,
+  });
+
+  const templatesQ = useQuery({
+    queryKey: ['admin', 'ai-rules', 'templates'],
+    queryFn: async () =>
+      (await api.get<{ templates: { id: string; label: string; description: string }[] }>(
+        '/admin/ai-rules/templates',
+      )).data.templates,
   });
 
   const rulesQ = useQuery({
@@ -46,6 +69,7 @@ export function AdminAiRulesPage() {
           project: { id: string; name: string; slug: string };
           hasCustomAiRules: boolean;
           usingDefaults: boolean;
+          seededFromTemplate?: string | null;
           rules: ProjectAiRulesEditable;
           defaults: ProjectAiRulesEditable;
         }>(`/admin/ai-rules/${selectedId}`)
@@ -56,8 +80,15 @@ export function AdminAiRulesPage() {
   useEffect(() => {
     if (rulesQ.data && !dirty) {
       setForm(rulesQ.data.rules);
+      if (rulesQ.data.seededFromTemplate) {
+        setSuccess(
+          'Fabric template was applied automatically for this project. Rules are saved and active.',
+        );
+        void qc.invalidateQueries({ queryKey: ['admin', 'ai-rules'] });
+        void qc.invalidateQueries({ queryKey: ['admin', 'projects'] });
+      }
     }
-  }, [rulesQ.data, dirty]);
+  }, [rulesQ.data, dirty, qc]);
 
   useEffect(() => {
     const fromUrl = searchParams.get('project');
@@ -106,22 +137,38 @@ export function AdminAiRulesPage() {
   });
 
   const resetMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedId) return;
-      await api.delete(`/admin/ai-rules/${selectedId}`);
+    mutationFn: async (projectId: string) => {
+      await api.delete(`/admin/ai-rules/${projectId}`);
     },
-    onSuccess: () => {
-      setConfirmReset(false);
+    onSuccess: (_data, projectId) => {
+      setDeleteTarget(null);
       setDirty(false);
-      setSuccess('Reset to system defaults. Agents will use built-in rules until you save custom rules.');
+      if (selectedId === projectId) {
+        setSuccess('Reset to system defaults. Agents will use built-in rules until you save custom rules.');
+        void rulesQ.refetch();
+      } else {
+        setSuccess('Custom AI rules deleted for this project.');
+      }
       invalidate();
-      void rulesQ.refetch();
     },
     onError: (err) => setError(getApiErrorMessage(err)),
   });
 
   const selected = listQ.data?.find((p) => p.id === selectedId);
+  const customProjects = (listQ.data ?? []).filter((p) => p.hasCustomAiRules);
   const usingDefaults = rulesQ.data?.usingDefaults ?? !selected?.hasCustomAiRules;
+
+  function formatUpdatedAt(iso: string | null | undefined): string {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+    } catch {
+      return iso;
+    }
+  }
 
   function setRule(key: RuleKey, value: string) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -135,19 +182,38 @@ export function AdminAiRulesPage() {
     setForm({
       implementationQualityRules: d.implementationQualityRules,
       magentoRules: d.magentoRules,
+      planningRules: d.planningRules,
       agentOutputContract: d.agentOutputContract,
     });
     setDirty(true);
     setSuccess(null);
   }
 
+  async function applyTemplate(templateId: string) {
+    setError(null);
+    try {
+      const { data } = await api.get<{ rules: ProjectAiRulesEditable }>(
+        `/admin/ai-rules/templates/${templateId}`,
+      );
+      setForm(data.rules);
+      setDirty(true);
+      setSuccess('Template loaded — review and click Save AI rules to apply.');
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    }
+  }
+
+  const missingQualityPlaceholder =
+    !!form?.magentoRules && !form.magentoRules.includes('{IMPLEMENTATION_QUALITY_RULES}');
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold">AI Rules</h1>
         <p className="text-sm text-slate-500">
-          Configure per-project prompt rules for implementation quality, Magento conventions, and agent
-          JSON output. Projects without custom rules use system defaults.
+          Per-project prompts for planning, coding, and analysis. Requirement analysis uses{' '}
+          <strong>Planning rules</strong>; code generation uses <strong>Magento rules</strong> and{' '}
+          <strong>Agent output contract</strong>.
         </p>
       </div>
 
@@ -166,6 +232,83 @@ export function AdminAiRulesPage() {
           ))}
         </select>
       </div>
+
+      <div className="card overflow-hidden">
+        <div className="border-b border-slate-200 px-4 py-3 dark:border-neutral-700">
+          <h2 className="text-sm font-medium text-slate-800 dark:text-slate-200">
+            Projects with custom AI rules
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            These workspaces override system defaults for agent prompts.
+          </p>
+        </div>
+        {listQ.isLoading && <p className="p-4 text-sm text-slate-400">Loading…</p>}
+        {!listQ.isLoading && customProjects.length === 0 && (
+          <p className="p-4 text-sm text-slate-400">
+            No projects have custom rules yet. Select a project above, customize the prompts, and
+            click Save AI rules.
+          </p>
+        )}
+        {customProjects.length > 0 && (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-slate-500 dark:bg-neutral-900 dark:text-slate-400">
+              <tr>
+                <th className="px-4 py-2">Project</th>
+                <th className="px-4 py-2">Slug</th>
+                <th className="px-4 py-2">Last updated</th>
+                <th className="px-4 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+              {customProjects.map((p) => (
+                <tr
+                  key={p.id}
+                  className={p.id === selectedId ? 'bg-brand-50/50 dark:bg-brand-950/20' : undefined}
+                >
+                  <td className="px-4 py-2 font-medium">
+                    {p.name}
+                    <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-900/40 dark:text-green-300">
+                      Custom
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-500">{p.slug}</td>
+                  <td className="px-4 py-2 text-slate-500">{formatUpdatedAt(p.updatedAt)}</td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        className="btn-ghost text-xs"
+                        onClick={() => selectProject(p.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger text-xs"
+                        disabled={resetMutation.isPending}
+                        onClick={() => setDeleteTarget(p)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      )}
+      {success && (
+        <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800 dark:bg-green-950/40 dark:text-green-300">
+          {success}
+        </div>
+      )}
 
       {!selectedId && (
         <p className="text-sm text-slate-400">
@@ -191,27 +334,47 @@ export function AdminAiRulesPage() {
             {usingDefaults ? (
               <>
                 <strong>Using system defaults.</strong> Save customized rules for{' '}
-                <span className="font-medium">{selected?.name}</span> to override agent behavior for
+                <span className="font-medium">{selected?.name}</span> to override AI behavior for
                 this project.
               </>
             ) : (
               <>
                 <strong>Custom rules active</strong> for{' '}
-                <span className="font-medium">{selected?.name}</span>. All agent runs for this project
-                use these prompts.
+                <span className="font-medium">{selected?.name}</span>. Coding, planning, analysis,
+                deploy fix, and project chat use these prompts for this workspace.
               </>
             )}
           </div>
+
+          {missingQualityPlaceholder && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <strong>Tip:</strong> Magento rules do not include{' '}
+              <code className="rounded bg-amber-100 px-1">{'{IMPLEMENTATION_QUALITY_RULES}'}</code>.
+              Implementation quality rules will not be injected into coding prompts until you add
+              that placeholder.
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn-secondary text-sm" onClick={loadDefaults}>
               Fill from system defaults
             </button>
+            {(templatesQ.data ?? []).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="btn-secondary text-sm"
+                title={t.description}
+                onClick={() => void applyTemplate(t.id)}
+              >
+                Apply {t.label} template
+              </button>
+            ))}
             {rulesQ.data?.hasCustomAiRules && (
               <button
                 type="button"
                 className="btn-danger text-sm"
-                onClick={() => setConfirmReset(true)}
+                onClick={() => selected && setDeleteTarget(selected)}
               >
                 Delete custom rules (use defaults)
               </button>
@@ -219,9 +382,14 @@ export function AdminAiRulesPage() {
           </div>
 
           <div className="space-y-4">
-            {(Object.keys(RULE_LABELS) as RuleKey[]).map((key) => (
+            {RULE_ORDER.map((key) => (
               <section key={key} className="card p-4">
-                <h2 className="font-medium">{RULE_LABELS[key].title}</h2>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h2 className="font-medium">{RULE_LABELS[key].title}</h2>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-neutral-800 dark:text-slate-400">
+                    {RULE_LABELS[key].usedIn}
+                  </span>
+                </div>
                 <p className="mt-1 text-xs text-slate-500">{RULE_LABELS[key].hint}</p>
                 <textarea
                   className="input mt-3 min-h-[200px] w-full resize-y font-mono text-xs leading-relaxed"
@@ -231,13 +399,6 @@ export function AdminAiRulesPage() {
               </section>
             ))}
           </div>
-
-          {error && (
-            <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
-          )}
-          {success && (
-            <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800">{success}</div>
-          )}
 
           <div className="flex justify-end gap-2">
             <button
@@ -252,12 +413,12 @@ export function AdminAiRulesPage() {
         </>
       )}
 
-      {confirmReset && selected && (
+      {deleteTarget && (
         <ConfirmDeleteModal
-          title={`Reset AI rules for "${selected.name}"?`}
-          message="This deletes custom rules for this project. Agent runs will use system defaults until you save new rules."
-          onClose={() => setConfirmReset(false)}
-          onConfirm={() => resetMutation.mutate()}
+          title={`Delete custom AI rules for "${deleteTarget.name}"?`}
+          message="This removes custom rules for this project. Agent runs will use system defaults until you save new rules."
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => resetMutation.mutate(deleteTarget.id)}
         />
       )}
     </div>

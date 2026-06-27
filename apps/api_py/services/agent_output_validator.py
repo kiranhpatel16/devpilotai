@@ -6,6 +6,7 @@ import os
 import re
 from typing import Any
 
+from services.layout_xml_validator import is_layout_xml_path, validate_layout_xml_content
 from services.git_service import resolve_new_content, _read_if_exists, _safe_join
 
 STUB_COMMENT_RE = re.compile(
@@ -16,11 +17,54 @@ EMPTY_PHP_METHOD_RE = re.compile(
     r"function\s+\w+\s*\([^)]*\)\s*(?::\s*[\w\\|]+\s*)?\{\s*\}",
     re.MULTILINE,
 )
+PHP_CONSTRUCT_RE = re.compile(
+    r"function\s+__construct\s*\((.*?)\)\s*(?::|\{)",
+    re.DOTALL,
+)
 METHOD_ONLY_COMMENTS_RE = re.compile(
     r"function\s+\w+\s*\([^)]*\)\s*(?::\s*[\w\\|]+\s*)?\{[^{}]*//[^}]*\}",
     re.MULTILINE | re.DOTALL,
 )
 PHP_CODE_FILE_RE = re.compile(r"\.php$", re.IGNORECASE)
+
+
+def _extract_construct_param_names(content: str) -> list[str]:
+    match = PHP_CONSTRUCT_RE.search(content or "")
+    if not match:
+        return []
+    params_block = match.group(1)
+    names: list[str] = []
+    for param in params_block.split(","):
+        chunk = param.strip().split("=")[0].strip()
+        name_match = re.search(r"\$(\w+)\s*$", chunk)
+        if name_match:
+            names.append(name_match.group(1))
+    return names
+
+
+def _php_removed_constructor_dependencies(original: str, proposed: str) -> str | None:
+    """Detect fixes that strip DI dependencies from a PHP class."""
+    if not original or not proposed:
+        return None
+    orig_params = _extract_construct_param_names(original)
+    if not orig_params:
+        return None
+    prop_params = _extract_construct_param_names(proposed)
+    removed = [name for name in orig_params if name not in prop_params]
+    if removed:
+        return (
+            f"Removes constructor dependencies ({', '.join(removed)}) — "
+            "fix the reported error without deleting DI or class functionality."
+        )
+    orig_props = set(re.findall(r"\$this->(\w+)\s*=", original))
+    prop_props = set(re.findall(r"\$this->(\w+)\s*=", proposed))
+    removed_props = sorted(orig_props - prop_props)
+    if removed_props:
+        return (
+            f"Removes property assignments ({', '.join(removed_props)}) — "
+            "preserve existing class behavior while fixing the deploy error."
+        )
+    return None
 
 
 def _strip_php_comments_preserve_strings(content: str) -> str:
@@ -180,6 +224,10 @@ def validate_agent_output(cwd: str, output: dict[str, Any]) -> dict[str, list[st
                 "Write full implementation with DI, service calls, and return values."
             )
 
+        if is_layout_xml_path(path) and content:
+            for xml_err in validate_layout_xml_content(content, path):
+                blocking.append(f"{path}: {xml_err}")
+
     if has_new_php_class and not has_test_file:
         warnings.append(
             "Consider adding PHPUnit tests under Test/Unit/ for new app/code PHP classes."
@@ -218,6 +266,44 @@ def quality_error_message(blocking: list[str]) -> str | None:
     )
 
 
+def refine_blocking_preamble(blocking: list[str]) -> str:
+    """Targeted refine instructions derived from blocking validation errors."""
+    blob = " ".join(blocking).lower()
+    hints: list[str] = []
+
+    layout = any(
+        "/layout/" in e.lower()
+        or "/page_layout/" in e.lower()
+        or "unescaped" in e.lower()
+        or "invalid xml" in e.lower()
+        for e in blocking
+    )
+    stub = "stub" in blob or "placeholder" in blob
+    missing = "file does not exist" in blob
+    syntax = any(k in blob for k in ("syntax", "parse error", "php -l", "unmatched"))
+
+    if layout:
+        hints.append(
+            "Fix layout/theme XML errors — escape every & as &amp; in attributes and URLs; "
+            "return action=modify with full corrected XML file content."
+        )
+    if stub:
+        hints.append(
+            "Replace stub/placeholder code with full implementations — do not drop unrelated files."
+        )
+    if missing:
+        hints.append("New files must use action=create with full content.")
+    if syntax:
+        hints.append(
+            "Return action=modify with the full corrected PHP file in content (not small edits)."
+        )
+    if not hints:
+        hints.append(
+            "Fix these quality issues in the current proposal — do not drop unrelated files."
+        )
+    return " ".join(hints)
+
+
 def validate_deploy_fix_output(
     cwd: str,
     output: dict[str, Any],
@@ -237,6 +323,12 @@ def validate_deploy_fix_output(
     }
     error_files = acceptable_targets or {
         p.replace("\\", "/") for p in (analysis.get("errorFiles") or []) if p
+    }
+    layout_dom = any(issue.get("kind") == "layout_dom_validation" for issue in (analysis.get("issues") or []))
+    layout_targets = {
+        p.replace("\\", "/")
+        for p in (analysis.get("fixTargets") or [])
+        if p and (is_layout_xml_path(p) or p.endswith(".phtml"))
     }
 
     if not files:
@@ -269,6 +361,11 @@ def validate_deploy_fix_output(
         if PHP_CODE_FILE_RE.search(path) and proposed_content:
             from services.php_lint import lint_php_content_for_project
 
+            current = _read_if_exists(_safe_join(cwd, path)) or ""
+            removed_deps = _php_removed_constructor_dependencies(current, proposed_content)
+            if removed_deps:
+                blocking.append(f"{path}: {removed_deps}")
+
             lint_error = lint_php_content_for_project(
                 cwd,
                 proposed_content,
@@ -284,8 +381,44 @@ def validate_deploy_fix_output(
                     f"{path}: contains stub/placeholder PHP — write a real fix for the deploy error."
                 )
 
+        if is_layout_xml_path(path) and proposed_content:
+            from services.layout_head_fix_service import magento_head_layout_errors
+
+            for xml_err in validate_layout_xml_content(proposed_content, path):
+                blocking.append(f"{path}: {xml_err}")
+            for head_err in magento_head_layout_errors(proposed_content, path):
+                blocking.append(head_err)
+
+    plugin_stack_paths = {
+        p for p in proposed_paths
+        if p.endswith(".php") and p.startswith("app/code/")
+    }
+    theme_prefixes = {
+        "/".join(p.replace("\\", "/").split("/")[:5])
+        for p in layout_targets
+        if p.replace("\\", "/").startswith("app/design/")
+    }
+    theme_layout_or_phtml = {
+        p for p in proposed_paths
+        if (p.endswith(".phtml") or is_layout_xml_path(p))
+        and any(p.startswith(prefix + "/") for prefix in theme_prefixes)
+    }
+    if layout_dom and layout_targets and not (proposed_paths & layout_targets):
+        if not theme_layout_or_phtml:
+            blocking.append(
+                "Layout/head XML validation failed — fix the theme layout XML or phtml template "
+                f"({', '.join(sorted(layout_targets))}), not unrelated PHP plugins from the stack trace."
+            )
+    elif layout_dom and plugin_stack_paths and not theme_layout_or_phtml:
+        blocking.append(
+            "Do not edit PHP plugin files for a layout XML validation error — "
+            "fix default_head_blocks.xml or the related phtml template instead."
+        )
+
     if error_files and not (proposed_paths & error_files):
-        if analysis.get("generatedError"):
+        if layout_dom and theme_layout_or_phtml:
+            pass
+        elif analysis.get("generatedError"):
             blocking.append(
                 "Fix must edit at least one app/code source file related to this task: "
                 + ", ".join(sorted(error_files))
@@ -339,6 +472,10 @@ def validate_test_fix_output(
                 blocking.append(
                     f"{path}: proposed fix leaves the file unchanged — tests would fail again."
                 )
+
+        if is_layout_xml_path(path) and proposed_content:
+            for xml_err in validate_layout_xml_content(proposed_content, path):
+                blocking.append(f"{path}: {xml_err}")
 
         if PHP_CODE_FILE_RE.search(path) and proposed_content:
             from services.php_lint import lint_php_content_for_project

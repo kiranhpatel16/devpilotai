@@ -16,6 +16,20 @@ from services.repo_context import (
     _merge_excerpts,
     _read_excerpt,
 )
+from services.layout_xml_validator import is_layout_xml_path
+from services.layout_head_fix_service import (
+    find_reference_tracking_templates,
+    gather_layout_dom_reference_excerpts,
+    layout_has_invalid_head_tags,
+    magento_head_layout_errors,
+    related_theme_layout_paths,
+    scan_project_layout_head_errors,
+)
+from services.magento_error_parser import (
+    THEME_LAYOUT_FILE_RE,
+    is_layout_head_dom_validation_error,
+    parse_storefront_error_text,
+)
 
 INVALID_XML_PATH_RE = re.compile(
     r'The XML in file "(?P<path>[^"]+)" is invalid',
@@ -132,6 +146,136 @@ def _changed_app_code_paths(detail: dict | None) -> list[str]:
     return paths
 
 
+def _changed_task_paths(detail: dict | None) -> list[str]:
+    if not detail:
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for entry in (detail.get("output") or {}).get("files") or []:
+        rel = (entry.get("path") or "").replace("\\", "/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        paths.append(rel)
+    return paths
+
+
+def _basenames_from_profile_reason(reason: str) -> list[str]:
+    match = re.search(r"\(([^)]+)\)", reason or "")
+    if not match:
+        return []
+    return [part.strip() for part in match.group(1).split(",") if part.strip()]
+
+
+def _find_theme_file_by_basename(cwd: str, basename: str) -> str | None:
+    if not basename or "/" in basename:
+        return None
+    for root_name in ("design", "code"):
+        root = os.path.join(cwd, "app", root_name)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            if basename not in files:
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, basename), cwd).replace("\\", "/")
+            if rel.startswith("app/"):
+                return rel
+    return None
+
+
+def _layout_and_template_paths(
+    detail: dict | None,
+    deploy: dict | None,
+    cwd: str,
+    raw_output: str,
+) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for rel in _changed_task_paths(detail):
+        if is_layout_xml_path(rel) or rel.endswith(".phtml"):
+            if rel not in seen:
+                seen.add(rel)
+                paths.append(rel)
+    reason = (deploy or {}).get("profileReason") or ""
+    for basename in _basenames_from_profile_reason(reason):
+        found = _find_theme_file_by_basename(cwd, basename)
+        if found and found not in seen:
+            seen.add(found)
+            paths.append(found)
+    layout_match = THEME_LAYOUT_FILE_RE.search(raw_output or "")
+    if layout_match:
+        rel = layout_match.group(1).lstrip("/").replace("\\", "/")
+        if rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
+    return paths
+
+
+def _is_misleading_layout_stack_php(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return normalized.endswith(".php") and normalized.startswith("app/code/")
+
+
+def _filter_misleading_layout_error_files(
+    error_files: list[str],
+    issues: list[dict[str, Any]],
+) -> list[str]:
+    if not any(issue.get("kind") == "layout_dom_validation" for issue in issues):
+        return error_files
+    filtered: list[str] = []
+    for path in error_files:
+        if _is_misleading_layout_stack_php(path):
+            continue
+        filtered.append(path)
+    return filtered
+
+
+def _collect_storefront_layout_errors(
+    output: str,
+    cwd: str,
+    issues: list[dict[str, Any]],
+    summary_parts: list[str],
+) -> bool:
+    parsed = parse_storefront_error_text(output)
+    if not is_layout_head_dom_validation_error(output, parsed):
+        return False
+
+    layout_file: str | None = None
+    if parsed:
+        candidate = parsed.get("file")
+        if candidate and not str(candidate).endswith(".php"):
+            layout_file = str(candidate).replace("\\", "/")
+    if not layout_file:
+        layout_match = THEME_LAYOUT_FILE_RE.search(output)
+        if layout_match:
+            layout_file = layout_match.group(1).lstrip("/").replace("\\", "/")
+
+    details = (parsed or {}).get("details") or []
+    detail_msg = (
+        "; ".join(details[:3])
+        if details
+        else (parsed or {}).get("message") or "Invalid head/layout XML"
+    )
+    stack = (parsed or {}).get("stackFile")
+    message = (
+        f"Storefront layout/head XML validation failed: {detail_msg}. "
+        "Fix the theme layout XML (for example default_head_blocks.xml) or linked phtml template — "
+        "do NOT edit unrelated PHP plugins from the stack trace."
+    )
+    if stack:
+        message += f" Stack trace references {stack} but the root cause is invalid layout XML."
+
+    issues.append({
+        "kind": "layout_dom_validation",
+        "file": layout_file,
+        "stackFile": stack,
+        "message": message,
+        "autoFixable": False,
+    })
+    summary_parts.append("Invalid theme layout/head XML (storefront check)")
+    return True
+
+
 def _find_likely_di_fix_targets(cwd: str, raw_output: str) -> list[str]:
     """Heuristic: locate app/code plugins related to a generated Interceptor failure."""
     match = re.search(
@@ -216,6 +360,34 @@ def _non_source_paths_from_analysis(analysis: dict[str, Any], cwd: str) -> list[
     return paths
 
 
+def _theme_prefixes_from_paths(paths: list[str]) -> set[str]:
+    prefixes: set[str] = set()
+    for path in paths:
+        theme_root = _theme_root_from_path(path)
+        if theme_root:
+            prefixes.add(theme_root)
+    return prefixes
+
+
+def _theme_root_from_path(path: str) -> str | None:
+    parts = path.replace("\\", "/").split("/")
+    if len(parts) >= 5 and parts[0] == "app" and parts[1] == "design":
+        return "/".join(parts[:5])
+    return None
+
+
+def _path_allowed_for_layout_dom_fix(path: str, acceptable: set[str]) -> bool:
+    if path in acceptable:
+        return True
+    prefixes = _theme_prefixes_from_paths(list(acceptable))
+    normalized = path.replace("\\", "/")
+    if not prefixes:
+        return False
+    if not any(normalized.startswith(prefix + "/") for prefix in prefixes):
+        return False
+    return is_layout_xml_path(normalized) or normalized.endswith(".phtml")
+
+
 def sanitize_deploy_fix_files(
     cwd: str,
     analysis: dict[str, Any],
@@ -225,6 +397,7 @@ def sanitize_deploy_fix_files(
     from services.git_service import normalize_agent_path
 
     acceptable = {p.replace("\\", "/") for p in deploy_fix_target_paths(analysis) if p}
+    layout_dom = bool(analysis.get("layoutDomError"))
     sanitized: list[dict] = []
     for change in files:
         raw_path = change.get("path") or ""
@@ -234,7 +407,8 @@ def sanitize_deploy_fix_files(
         if is_non_source_error_path(path):
             continue
         if acceptable and path not in acceptable:
-            continue
+            if not (layout_dom and _path_allowed_for_layout_dom_fix(path, acceptable)):
+                continue
         sanitized.append({**change, "path": path})
     return sanitized
 
@@ -243,6 +417,8 @@ def enrich_deploy_fix_analysis(
     analysis: dict[str, Any],
     detail: dict | None,
     cwd: str,
+    *,
+    active_theme: str | None = None,
 ) -> dict[str, Any]:
     """
     When DI compile fails in generated/vendor output, steer fixes to app/code sources.
@@ -251,6 +427,55 @@ def enrich_deploy_fix_analysis(
     enriched = {**analysis}
     error_files = list(enriched.get("errorFiles") or [])
     issues = list(enriched.get("issues") or [])
+
+    if any(issue.get("kind") == "layout_dom_validation" for issue in issues):
+        deploy = (detail or {}).get("deploy")
+        layout_targets = _layout_and_template_paths(
+            detail,
+            deploy,
+            cwd,
+            enriched.get("rawOutput") or "",
+        )
+        scan_findings = scan_project_layout_head_errors(
+            cwd,
+            active_theme=active_theme,
+            seed_paths=layout_targets,
+        )
+        enriched["layoutScanFindings"] = scan_findings
+        for finding in scan_findings:
+            path = finding.get("path")
+            if path and path not in layout_targets:
+                layout_targets.append(path)
+        if layout_targets:
+            enriched["fixTargets"] = layout_targets
+            filtered_errors = _filter_misleading_layout_error_files(error_files, issues)
+            for path in layout_targets:
+                if path not in filtered_errors:
+                    filtered_errors.append(path)
+            for rel in related_theme_layout_paths(cwd, layout_targets):
+                if rel not in filtered_errors:
+                    filtered_errors.append(rel)
+            enriched["errorFiles"] = filtered_errors
+            enriched["layoutDomError"] = True
+            enriched["aiFixable"] = True
+            refs = find_reference_tracking_templates(cwd, layout_targets)
+            if refs:
+                enriched["layoutReferenceTemplates"] = refs
+            for rel in layout_targets:
+                if not is_layout_xml_path(rel):
+                    continue
+                content = _read_file(cwd, rel) or ""
+                if layout_has_invalid_head_tags(content):
+                    for err in magento_head_layout_errors(content, rel):
+                        if not any(i.get("message") == err for i in issues):
+                            issues.append({
+                                "kind": "layout_dom_validation",
+                                "file": rel,
+                                "message": err,
+                                "autoFixable": True,
+                            })
+        enriched["issues"] = issues
+        return enriched
 
     non_source = _non_source_paths_from_analysis(enriched, cwd)
     for path in non_source:
@@ -318,6 +543,60 @@ def deploy_fix_target_paths(analysis: dict[str, Any]) -> list[str]:
         for path in error_files
         if path and not is_non_source_error_path(path)
     ]
+
+
+def build_deploy_fix_default_instructions(
+    analysis: dict[str, Any],
+    deploy: dict | None = None,
+) -> str:
+    """Structured fix request derived from deploy analysis (sent to AI when user leaves textarea blank)."""
+    lines: list[str] = []
+
+    summary = (analysis.get("summary") or "").strip()
+    if summary:
+        lines.append(f"Fix this deploy failure: {summary}")
+
+    failed_step = analysis.get("failedStep")
+    if failed_step:
+        lines.append(f"Failed step: {failed_step}")
+
+    for issue in analysis.get("issues") or []:
+        kind = issue.get("kind") or "issue"
+        message = (issue.get("message") or "").strip()
+        if message:
+            lines.append(f"[{kind}] {message}")
+
+    for finding in analysis.get("layoutScanFindings") or []:
+        path = finding.get("path")
+        for err in finding.get("errors") or []:
+            lines.append(f"[scan] {path}: {err}")
+
+    raw = (analysis.get("rawOutput") or "").strip()
+    if raw:
+        excerpt = raw if len(raw) <= 2500 else raw[:2500] + "\n…"
+        lines.append("\nDeploy output excerpt:\n" + excerpt)
+
+    fix_targets = analysis.get("fixTargets") or []
+    if fix_targets:
+        lines.append("\nProject scan + task files to fix:")
+        for path in fix_targets[:10]:
+            lines.append(f"- {path}")
+
+    if analysis.get("layoutDomError"):
+        lines.append(
+            "\nRequired Magento-standard fix:\n"
+            "1. Scan confirmed invalid inline <script> or <noscript> in theme layout XML.\n"
+            "2. Move that markup into a .phtml template under the active theme templates/ folder.\n"
+            "3. Remove inline tags from layout XML and add a "
+            "<block class=\"Magento\\Framework\\View\\Element\\Template\" template=\"Module::file.phtml\"/> "
+            "inside referenceContainer name=\"head.additional\".\n"
+            "4. Do NOT edit PHP plugin files from the stack trace — preserve all existing DI/functionality."
+        )
+        refs = analysis.get("layoutReferenceTemplates") or []
+        if refs:
+            lines.append("Follow existing tracking template wiring from: " + ", ".join(refs))
+
+    return "\n".join(line for line in lines if line).strip()
 
 
 def _failed_step_output(deploy: dict | None) -> tuple[str, str | None]:
@@ -865,6 +1144,8 @@ def analyze_deploy_failure(deploy: dict | None, cwd: str) -> dict[str, Any]:
 
     _collect_standalone_xml_errors(output, cwd, issues, summary_parts)
 
+    _collect_storefront_layout_errors(output, cwd, issues, summary_parts)
+
     _collect_magento_php_compile_errors(output, cwd, issues, summary_parts)
 
     php_errors = list(PHP_ERROR_IN_RE.finditer(output))
@@ -923,6 +1204,7 @@ def analyze_deploy_failure(deploy: dict | None, cwd: str) -> dict[str, Any]:
         else (output.strip().split("\n")[-1][:200] if output.strip() else "Deploy failed")
     )
     error_files = _error_files_from_analysis(output, cwd, issues)
+    error_files = _filter_misleading_layout_error_files(error_files, issues)
     return {
         "failedStep": failed_step,
         "summary": primary_summary,
@@ -1189,13 +1471,26 @@ def gather_deploy_fix_excerpts(
         for issue in (analysis.get("issues") or [])
         if issue.get("kind") in ("php_syntax", "php_runtime", "generated_di_source") and issue.get("file")
     }
+    layout_files = {
+        issue.get("file")
+        for issue in (analysis.get("issues") or [])
+        if issue.get("kind") == "layout_dom_validation" and issue.get("file")
+    }
     path_excerpts = []
+    if analysis.get("layoutDomError") and fix_targets:
+        path_excerpts = gather_layout_dom_reference_excerpts(cwd, fix_targets)
     for rel in fix_targets[:6]:
         if rel in {item["path"] for item in path_excerpts}:
             continue
         item = _read_excerpt(cwd, rel, 8000)
         if item:
             path_excerpts.append(item)
+    for rel in sorted(layout_files)[:4]:
+        if rel in {item["path"] for item in path_excerpts}:
+            continue
+        content = _read_file(cwd, rel)
+        if content:
+            path_excerpts.append({"path": rel, "content": content[:12_000]})
     for rel in error_files[:6]:
         if analysis.get("generatedError") and is_non_source_error_path(rel):
             continue

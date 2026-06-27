@@ -1,6 +1,7 @@
 import uuid
 import json
 from database import get_db, now_iso
+from services.project_llm_config import parse_llm_config, llm_config_to_json
 
 
 def _map_row(row) -> dict:
@@ -26,6 +27,9 @@ def _map_row(row) -> dict:
             if "deploy_skip_composer" in row.keys()
             else False,
         },
+        "llmConfig": parse_llm_config(
+            row["llm_config_json"] if "llm_config_json" in row.keys() else None
+        ),
         "git": {
             "remote": row["git_remote"],
             "productionBranch": row["git_production_branch"],
@@ -136,6 +140,8 @@ class _ProjectsRepo:
             j = {**current["jira"], **input["jira"]}
             j.pop("apiToken", None)  # never persist raw token in the main row
             merged["jira"] = j
+        if "llmConfig" in input and input["llmConfig"] is not None:
+            merged["llmConfig"] = parse_llm_config({**current["llmConfig"], **input["llmConfig"]})
 
         db = get_db()
         db.execute(
@@ -149,6 +155,7 @@ class _ProjectsRepo:
                git_pr_provider=?, git_repo_owner=?, git_repo_name=?, git_api_username=?,
                jira_base_url=?, jira_project_key=?, jira_email=?,
                jira_status_filters=?, jira_assignee_filter=?,
+               llm_config_json=?,
                updated_at=?
                WHERE id=?""",
             (
@@ -170,8 +177,22 @@ class _ProjectsRepo:
                 merged["jira"].get("email"),
                 json.dumps(merged["jira"].get("statusFilters", [])),
                 merged["jira"].get("assigneeFilter"),
+                llm_config_to_json(merged.get("llmConfig")),
                 now_iso(), project_id,
             ),
+        )
+        db.commit()
+        return self.find_by_id(project_id)
+
+    def update_llm_config(self, project_id: str, llm_config: dict) -> dict | None:
+        current = self.find_by_id(project_id)
+        if not current:
+            return None
+        merged = parse_llm_config({**current["llmConfig"], **llm_config})
+        db = get_db()
+        db.execute(
+            "UPDATE projects SET llm_config_json=?, updated_at=? WHERE id=?",
+            (llm_config_to_json(merged), now_iso(), project_id),
         )
         db.commit()
         return self.find_by_id(project_id)

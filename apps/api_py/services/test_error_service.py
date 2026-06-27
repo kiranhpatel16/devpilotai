@@ -11,6 +11,14 @@ from services.repo_context import _read_excerpt
 
 PHP_PATH_RE = re.compile(r"(app/code/[^\s:'\"<>]+\.php)")
 LAYOUT_PATH_RE = re.compile(r"(app/(?:design|code)/[^\s:'\"<>]+\.(?:xml|phtml))", re.IGNORECASE)
+ABS_LAYOUT_PATH_RE = re.compile(
+    r"/var/www/html/(app/(?:design|code)/[^\s'\"<>]+\.(?:xml|phtml))",
+    re.IGNORECASE,
+)
+THEME_LAYOUT_FILE_RE = re.compile(
+    r"layout update file\s+'(?:/var/www/html/)?([^']+\.xml)'",
+    re.IGNORECASE,
+)
 PHPUNIT_CLASS_RE = re.compile(
     r"([\w\\]+Test(?:::[\w]+)?)",
 )
@@ -28,6 +36,59 @@ def infer_class_under_test(test_path: str) -> str | None:
     if "/Test/Unit/" not in norm or not norm.endswith("Test.php"):
         return None
     return norm.replace("/Test/Unit/", "/").replace("Test.php", ".php")
+
+
+def build_layout_xml_auto_fix(
+    cwd: str,
+    analysis: dict[str, Any],
+    changed_paths: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Escape unescaped ampersands in invalid layout XML referenced by test failures."""
+    from services.layout_xml_validator import is_layout_xml_path, validate_layout_xml_content
+
+    candidates: list[str] = list(analysis.get("errorFiles") or [])
+    failed = analysis.get("failedSteps") or []
+    if not candidates and "visual_smoke" in failed:
+        for rel in changed_paths or []:
+            if is_layout_xml_path(rel) and rel not in candidates:
+                candidates.append(rel)
+    if not candidates and "layout_xml_validate" in failed:
+        for rel in changed_paths or []:
+            if is_layout_xml_path(rel) and rel not in candidates:
+                candidates.append(rel)
+
+    proposed_files: list[dict[str, Any]] = []
+    for rel in candidates:
+        if not is_layout_xml_path(rel):
+            continue
+        content = _read_file(cwd, rel)
+        if not content:
+            continue
+        fixed = re.sub(
+            r"&(?!amp;|lt;|gt;|apos;|quot;|#\d+;|#x[0-9a-fA-F]+;)",
+            "&amp;",
+            content,
+        )
+        if fixed == content:
+            continue
+        if validate_layout_xml_content(fixed, rel):
+            continue
+        proposed_files.append({
+            "path": rel,
+            "action": "modify",
+            "reason": "Escape unescaped '&' characters for valid Magento layout XML",
+            "content": fixed,
+        })
+
+    if not proposed_files:
+        return None
+
+    return {
+        "summary": "Auto-fixed layout XML: escaped unescaped '&' characters (common EntityRef errors)",
+        "files": proposed_files,
+        "manualTestChecklist": ["Re-run QA and confirm the homepage loads without exceptions"],
+        "risks": [],
+    }
 
 
 def build_phpunit_auto_fix(cwd: str, analysis: dict[str, Any]) -> dict[str, Any] | None:
@@ -105,24 +166,26 @@ def _read_file(cwd: str, rel: str) -> str | None:
 def _paths_from_test_output(output: str) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
+
+    def add(rel: str) -> None:
+        rel = rel.lstrip("/").replace("\\", "/")
+        if rel and rel not in seen:
+            seen.add(rel)
+            paths.append(rel)
+
+    for match in THEME_LAYOUT_FILE_RE.finditer(output or ""):
+        add(match.group(1))
+    for match in ABS_LAYOUT_PATH_RE.finditer(output or ""):
+        add(match.group(1))
     for match in PHP_PATH_RE.finditer(output or ""):
-        rel = match.group(1).lstrip("/")
-        if rel not in seen:
-            seen.add(rel)
-            paths.append(rel)
+        add(match.group(1))
     for match in LAYOUT_PATH_RE.finditer(output or ""):
-        rel = match.group(1).lstrip("/")
-        if rel not in seen:
-            seen.add(rel)
-            paths.append(rel)
+        add(match.group(1))
     for match in PHPUNIT_CLASS_RE.finditer(output or ""):
         fqcn = match.group(1).split("::")[0]
         parts = fqcn.replace("\\", "/").split("/")
         if len(parts) >= 2:
-            rel = f"app/code/{'/'.join(parts[:-1])}/{parts[-1]}.php"
-            if rel not in seen:
-                seen.add(rel)
-                paths.append(rel)
+            add(f"app/code/{'/'.join(parts[:-1])}/{parts[-1]}.php")
     return paths
 
 
@@ -157,6 +220,13 @@ def analyze_test_failure(test_report: dict | None) -> dict[str, Any]:
         raw_chunks.append(f"=== {step.get('label', step.get('key', 'check'))} ===\n{output}")
         storefront = step.get("storefrontError")
         if isinstance(storefront, dict):
+            message = storefront.get("message") or ""
+            if message and not storefront.get("file"):
+                from services.magento_error_parser import parse_magento_storefront_error
+
+                parsed = parse_magento_storefront_error(message)
+                if parsed:
+                    storefront = {**storefront, **{k: v for k, v in parsed.items() if v is not None}}
             if storefront.get("file"):
                 rel = str(storefront["file"]).lstrip("/")
                 if rel not in error_files:
@@ -189,7 +259,7 @@ def analyze_test_failure(test_report: dict | None) -> dict[str, Any]:
         "failedSteps": [s.get("key") for s in failed_steps],
         "errorFiles": error_files[:8],
         "rawOutput": raw_output,
-        "aiFixable": bool(error_files or raw_output.strip()),
+        "aiFixable": bool(error_files or raw_output.strip() or failed_steps),
     }
 
 

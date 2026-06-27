@@ -50,6 +50,20 @@ class TestEnvBody(BaseModel):
     dockerComposePath: Optional[str] = None
 
 
+class LlmConfigBody(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    planningProvider: Optional[str] = None
+    planningModel: Optional[str] = None
+    codingProvider: Optional[str] = None
+    codingModel: Optional[str] = None
+    maxTokens: Optional[int] = None
+    temperature: Optional[float] = None
+    topP: Optional[float] = None
+    jsonMode: Optional[bool] = None
+    maxRetries: Optional[int] = None
+
+
 def _db_config_for_check(
     project_root: str,
     body: TestEnvBody | EnvironmentBody,
@@ -216,3 +230,24 @@ async def get_health(project_id: str, auth: dict = Depends(get_auth)):
     health = check_environment_path(resolved["cwd"], resolved["env"].get("phpBin"), db_config)
     environments_repo.save_health(auth["sub"], project_id, health)
     return {"health": health, "cwd": resolved["cwd"]}
+
+
+@router.put("/{project_id}/llm-config")
+async def save_project_llm_config(
+    project_id: str, body: LlmConfigBody, auth: dict = Depends(get_auth)
+):
+    _assert_access(auth, project_id)
+    project = projects_repo.find_by_id(project_id)
+    if not project:
+        raise HttpError.not_found("Project not found")
+    updated = projects_repo.update_llm_config(
+        project_id, body.model_dump(exclude_unset=True)
+    )
+    activities_repo.create({
+        "userId": auth["sub"], "username": auth["username"],
+        "action": "project.llm_config_updated", "resourceType": "project",
+        "resourceId": project_id, "projectId": project_id,
+        "projectName": project["name"],
+        "summary": f"{auth['username']} updated LLM configuration for {project['name']}",
+    })
+    return {"project": updated}

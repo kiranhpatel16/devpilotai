@@ -35,6 +35,10 @@ from routers.usage import router as usage_router
 # Initialise DB on startup
 get_db()
 
+from services.ai_rule_templates import seed_all_auto_templates
+
+seed_all_auto_templates()
+
 app = FastAPI(title="CPWork API", version="1.0.0", redirect_slashes=False)
 
 app.add_middleware(

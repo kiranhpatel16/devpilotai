@@ -6,6 +6,7 @@ from services.agent_output_validator import (
     validate_agent_output,
     validate_deploy_fix_output,
     paths_from_blocking_errors,
+    refine_blocking_preamble,
 )
 
 
@@ -113,6 +114,72 @@ class AgentOutputValidatorTests(unittest.TestCase):
                 "app/code/Vendor/Module/Api/Bar.php",
             },
         )
+
+    def test_refine_blocking_preamble_layout_xml(self):
+        blocking = [
+            "app/design/frontend/Vendor/theme/Magento_Theme/layout/default_head_blocks.xml: "
+            "Line 23: unescaped '&' — use &amp; in XML attributes and URLs",
+        ]
+        preamble = refine_blocking_preamble(blocking)
+        self.assertIn("&amp;", preamble)
+        self.assertNotIn("stub", preamble.lower())
+
+    def test_refine_blocking_preamble_stub(self):
+        blocking = ["app/code/Vendor/Module/Model/Foo.php: contains stub/placeholder code"]
+        preamble = refine_blocking_preamble(blocking)
+        self.assertIn("stub", preamble.lower())
+
+    def test_deploy_fix_rejects_removed_constructor_dependencies(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            rel = "app/code/Mirasvit/RewardsBehavior/Plugin/CustomerSessionContext.php"
+            full = os.path.join(cwd, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            original = """<?php
+namespace Mirasvit\\RewardsBehavior\\Plugin;
+
+class CustomerSessionContext
+{
+    public function __construct(
+        \\Magento\\Customer\\Model\\Session $customerSession,
+        \\Magento\\Framework\\App\\Http\\Context $httpContext,
+        \\Magento\\Framework\\UrlInterface $urlManager
+    ) {
+        $this->customerSession = $customerSession;
+        $this->httpContext = $httpContext;
+        $this->urlManager = $urlManager;
+    }
+}
+"""
+            with open(full, "w", encoding="utf-8") as fp:
+                fp.write(original)
+            layout = (
+                "app/design/frontend/Vendor/theme/Magento_Theme/layout/default_head_blocks.xml"
+            )
+            analysis = {
+                "issues": [{"kind": "layout_dom_validation"}],
+                "fixTargets": [layout],
+                "errorFiles": [layout],
+            }
+            output = {
+                "files": [{
+                    "path": rel,
+                    "action": "modify",
+                    "content": """<?php
+namespace Mirasvit\\RewardsBehavior\\Plugin;
+
+class CustomerSessionContext
+{
+    public function __construct(\\Magento\\Customer\\Model\\Session $customerSession)
+    {
+        $this->customerSession = $customerSession;
+    }
+}
+""",
+                }],
+            }
+            result = validate_deploy_fix_output(cwd, output, analysis, php_bin="php")
+            self.assertTrue(result["blocking"])
+            self.assertTrue(any("constructor dependencies" in b.lower() for b in result["blocking"]))
 
 
 if __name__ == "__main__":

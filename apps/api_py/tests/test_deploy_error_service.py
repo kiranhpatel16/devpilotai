@@ -625,6 +625,56 @@ class DeployErrorServiceTests(unittest.TestCase):
         )
         self.assertTrue(analysis.get("fixTargets"))
 
+    def test_storefront_layout_dom_error_targets_theme_files_not_plugin(self):
+        layout_xml = (
+            "app/design/frontend/Commercepundit/fabric5anddime/"
+            "Magento_Theme/layout/default_head_blocks.xml"
+        )
+        phtml = (
+            "app/design/frontend/Commercepundit/fabric5anddime/"
+            "Magento_Theme/templates/gtm_head.phtml"
+        )
+        deploy = {
+            "ok": False,
+            "profileReason": "Composer or module setup changed (default_head_blocks.xml, gtm_head.phtml)",
+            "steps": [{
+                "key": "storefront_probe",
+                "ok": False,
+                "skipped": False,
+                "output": (
+                    "HTTP 500 — Magento storefront error\n"
+                    "Exception: Magento\\Framework\\Config\\Dom\\ValidationException\n"
+                    "Element 'script': The attribute 'src' is required but missing.\n"
+                    "File: app/code/Mirasvit/RewardsBehavior/Plugin/CustomerSessionContext.php (line 47)\n"
+                    "  • Element 'script': The attribute 'src' is required but missing.\n"
+                    "  • Element 'noscript': This element is not expected.\n"
+                ),
+            }],
+        }
+        detail = {
+            "deploy": deploy,
+            "output": {
+                "files": [
+                    {"path": layout_xml, "action": "modify"},
+                    {"path": phtml, "action": "modify"},
+                ],
+            },
+        }
+        cwd = "/var/www/html/fabric5anddime_m2"
+        analysis = enrich_deploy_fix_analysis(
+            analyze_deploy_failure(deploy, cwd),
+            detail,
+            cwd,
+        )
+        self.assertTrue(any(i.get("kind") == "layout_dom_validation" for i in analysis.get("issues") or []))
+        targets = deploy_fix_target_paths(analysis)
+        self.assertIn(layout_xml, targets)
+        self.assertIn(phtml, targets)
+        self.assertNotIn(
+            "app/code/Mirasvit/RewardsBehavior/Plugin/CustomerSessionContext.php",
+            targets,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

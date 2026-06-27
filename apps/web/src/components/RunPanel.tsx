@@ -353,11 +353,15 @@ export function RunPanel({
               {git?.pushed ? 'Pushed ✓' : pushM.isPending ? 'Pushing…' : 'Push'}
             </button>
             <button
-              className="btn-primary"
-              disabled={prM.isPending || !git?.pushed}
+              className={git?.prUrl ? 'btn-secondary' : 'btn-primary'}
+              disabled={prM.isPending || !git?.pushed || !!git?.prUrl}
               onClick={() => prM.mutate()}
             >
-              {prM.isPending ? 'Opening PR…' : 'Create staging PR'}
+              {git?.prUrl
+                ? 'PR created ✓'
+                : prM.isPending
+                  ? 'Opening PR…'
+                  : 'Create staging PR'}
             </button>
           </div>
 

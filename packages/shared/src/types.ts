@@ -42,6 +42,7 @@ export interface Project {
   /** Active frontend theme path, e.g. "BlueAcorn/site" or "CP/colemans". */
   frontendTheme: string | null;
   defaults: ProjectDefaults;
+  llmConfig: ProjectLlmConfig;
   git: ProjectGitConfig;
   jira: ProjectJiraConfig;
   createdAt: string;
@@ -58,6 +59,27 @@ export interface ProjectDefaults {
   deployProfile?: import('./deployProfile.js').DeployProfileMode;
   /** When true, never run composer install during local deploy */
   deploySkipComposer?: boolean;
+}
+
+/** Per-project defaults for AI agent runs (workspace LLM tab). */
+export interface ProjectLlmConfig {
+  /** @deprecated Use planningProvider — kept for backward compatibility. */
+  provider: string | null;
+  /** @deprecated Use planningModel — kept for backward compatibility. */
+  model: string | null;
+  /** Requirement analysis, architecture, plan, and review. */
+  planningProvider: string | null;
+  planningModel: string | null;
+  /** Coding step — file edits (Cursor SDK recommended). */
+  codingProvider: string | null;
+  codingModel: string | null;
+  maxTokens: number | null;
+  temperature: number | null;
+  topP: number | null;
+  /** Prefer JSON object responses from the model (agent modes). */
+  jsonMode: boolean;
+  /** Override default agent retry count; null = use system default. */
+  maxRetries: number | null;
 }
 
 export interface ProjectGitConfig {
@@ -90,6 +112,7 @@ export interface ProjectAiRules {
   projectId: string;
   implementationQualityRules: string | null;
   magentoRules: string | null;
+  planningRules: string | null;
   agentOutputContract: string | null;
   createdAt: string;
   updatedAt: string;
@@ -98,6 +121,7 @@ export interface ProjectAiRules {
 export interface ProjectAiRulesEditable {
   implementationQualityRules: string;
   magentoRules: string;
+  planningRules: string;
   agentOutputContract: string;
 }
 
@@ -313,6 +337,16 @@ export interface AiUsage {
   latencyMs: number;
 }
 
+/** Cumulative AI usage for all calls on a workflow run. */
+export interface RunUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  creditsUsed: number;
+  latencyMs: number;
+  callCount: number;
+}
+
 // ----- Diffs / review -----
 
 export interface FileDiff {
@@ -430,8 +464,19 @@ export interface GitCommitRow {
 
 // ----- Run detail (assembled view) -----
 
+/** Provider/model actually used for AI calls (workspace defaults + overrides). */
+export interface EffectiveLlm {
+  /** Primary display — coding on code steps, planning otherwise. */
+  provider: string | null;
+  model: string | null;
+  planning: { provider: string | null; model: string | null };
+  coding: { provider: string | null; model: string | null };
+}
+
 export interface RunDetail {
   run: Run;
+  /** Resolved LLM for this run; prefer over raw run.provider/model in the UI. */
+  effectiveLlm?: EffectiveLlm | null;
   output: AgentOutput | null;
   diffs: FileDiff[];
   applied: boolean;
@@ -442,6 +487,8 @@ export interface RunDetail {
   deploy: TestReport | null;
   git: GitInfo | null;
   usage: AiUsage | null;
+  /** Sum of all AI calls recorded for this run. */
+  usageTotals?: RunUsageTotals | null;
   error: string | null;
   /** Filesystem path when a plan-mode run is saved as markdown. */
   planFilePath: string | null;
@@ -449,29 +496,115 @@ export interface RunDetail {
   workflow: TaskRunState | null;
 }
 
-// ----- Task workflow (11-step stepper) -----
+// ----- Task workflow (SDLC stepper) -----
 
+/** Legacy step ids are kept for in-flight runs; the server migrates them on read. */
 export type TaskWorkflowStep =
   | 'select'
+  | 'requirement_analysis'
+  | 'environment_setup'
+  | 'architecture_design'
+  | 'development_plan'
+  | 'test_cases'
+  | 'pre_dev_approval'
+  | 'agent'
+  | 'deploy'
+  | 'code_review'
+  | 'commit'
+  | 'qa'
+  | 'done'
+  // legacy (migrated server-side)
   | 'branch'
   | 'describe'
   | 'plan'
   | 'review_plan'
-  | 'agent'
-  | 'code_review'
-  | 'deploy'
-  | 'commit'
-  | 'jira_comment'
-  | 'done';
+  | 'jira_comment';
+
+export type DevAgentId = 'magento' | 'react' | 'laravel' | 'qa';
 
 export type ApprovalStatus =
   | 'draft'
+  | 'pre_dev_pending'
+  | 'pre_dev_approved'
   | 'plan_pending'
   | 'plan_approved'
   | 'code_pending'
   | 'code_approved'
   | 'done'
   | 'failed';
+
+export interface RequirementAnalysis {
+  summary?: string;
+  objective?: string;
+  functionalRequirements?: string[];
+  nonFunctionalRequirements?: string[];
+  businessImpact?: string;
+  impactedModules?: string[];
+  likelyFiles?: string[];
+  risks?: Array<{ level: string; description: string }>;
+  assumptions?: string[];
+  questions?: string[];
+  /** ASCII tree of likely files — preferred for display. */
+  likelyFileStructure?: string;
+  estimatedComplexity?: 'S' | 'M' | 'L' | 'XL' | string;
+}
+
+export interface ArchitectureDesign {
+  systemOverview?: string;
+  /** ASCII directory tree of files to create or modify. */
+  moduleFileStructure?: string;
+  filesToModify?: string[];
+  /** @deprecated Legacy field — no longer generated; use moduleFileStructure. */
+  componentDiagram?: string;
+  databaseImpact?: string;
+  apiChanges?: string[];
+  frontendChanges?: string[];
+  backendChanges?: string[];
+  dependencyMapping?: string[];
+  risks?: Array<{ level: string; description: string }>;
+}
+
+export interface PlanTask {
+  id: string;
+  title: string;
+  file?: string | null;
+  estimatedMinutes?: number;
+}
+
+export interface WorkflowTestCase {
+  id: string;
+  title: string;
+  type?: string;
+  expected?: string;
+  steps?: string;
+}
+
+export interface AgentGenerationChunk {
+  index: number;
+  label: string;
+  status: 'pending' | 'running' | 'complete' | 'failed';
+  fileCount?: number;
+}
+
+export interface AgentGenerationProgress {
+  status: 'running' | 'complete' | 'failed';
+  currentChunk: number;
+  totalChunks: number;
+  chunkLabel?: string;
+  filesGenerated: number;
+  chunks: AgentGenerationChunk[];
+}
+
+export interface AiReviewReport {
+  issuesFound: number;
+  codeQualityScore?: number;
+  securityOk?: boolean;
+  performanceOk?: boolean;
+  magentoStandardsOk?: boolean;
+  issues: Array<{ severity: string; message: string; file?: string }>;
+  autoFixAvailable?: boolean;
+  summary?: string;
+}
 
 export interface TaskRunState {
   currentStep: TaskWorkflowStep;
@@ -480,15 +613,34 @@ export interface TaskRunState {
   customTitle: string | null;
   customTaskKey: string | null;
   customRequirements: string | null;
+  requirementAnalysis: RequirementAnalysis | null;
+  architectureDesign: ArchitectureDesign | null;
   planMarkdown: string | null;
+  planTasks: PlanTask[] | null;
   planFilePath: string | null;
+  testCases: WorkflowTestCase[] | null;
+  devAgentId: DevAgentId;
+  /** When true, run.provider/model were set on setup and override workspace defaults. */
+  llmOverride?: boolean;
+  /** Coding-step provider/model chosen on setup (overrides workspace coding defaults). */
+  codingProvider?: string | null;
+  codingModel?: string | null;
   planApprovedAt: string | null;
   planApprovedBy: string | null;
+  preDevApprovedAt: string | null;
+  preDevApprovedBy: string | null;
   approvalStatus: ApprovalStatus;
+  aiReview: AiReviewReport | null;
   jiraCommentPostedAt: string | null;
   jiraCommentId: string | null;
   jiraCommentText: string | null;
   testPassRate: string | null;
+  /** Jira key / custom title the pre-dev artifacts were generated for. */
+  artifactsForTaskKey?: string | null;
+  /** Jira summary / custom title at generation time — used to detect stale artifacts. */
+  artifactsForTaskSummary?: string | null;
+  /** Progress while the developer agent generates code in plan chunks. */
+  agentGeneration?: AgentGenerationProgress | null;
 }
 
 export interface TaskHistoryRow {

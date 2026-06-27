@@ -100,7 +100,7 @@ function ProviderCard({
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testOk, setTestOk] = useState<boolean | null>(null);
 
-  const unavailable = provider.id === 'cursor';
+  const isCursor = provider.id === 'cursor';
   const typedApiKey = keyFieldActive && keyDirty ? apiKey.trim() : '';
   const canTest = keyConfigured || !!typedApiKey;
 
@@ -236,7 +236,6 @@ function ProviderCard({
             <input
               type="checkbox"
               checked={enabled}
-              disabled={unavailable}
               onChange={(e) => setEnabled(e.target.checked)}
             />
             Enabled
@@ -244,17 +243,18 @@ function ProviderCard({
         </div>
       </div>
 
-      {unavailable ? (
-        <div className="space-y-2 rounded-md bg-slate-50 p-3 text-xs text-slate-600 dark:bg-neutral-900 dark:text-slate-400">
-          <p className="font-medium text-slate-700 dark:text-slate-300">Cursor AI (optional)</p>
+      {isCursor && (
+        <div className="space-y-2 rounded-md bg-sky-50 p-3 text-xs text-slate-600 dark:bg-sky-950/40 dark:text-slate-400">
+          <p className="font-medium text-slate-700 dark:text-slate-300">Cursor SDK (coding execution)</p>
           <p>
-            Cursor SDK is not wired into automated plan/code runs in this build. For development,
-            use <strong>ChatGPT (gpt-4o)</strong> in DevPilot for plan and agent steps, and use{' '}
-            <strong>Cursor IDE</strong> on your machine to fix layout XML and theme files after Review.
+            Paste your Cursor API key from Cursor Dashboard → Integrations. Used for the Coding step —
+            edits files directly on the user&apos;s project path. Planning and review stay on
+            ChatGPT/Cloud AI.
           </p>
         </div>
-      ) : (
-        <>
+      )}
+
+      <>
           <div>
             <label className="label">API key {keyConfigured && '(leave blank to keep)'}</label>
             <input
@@ -344,6 +344,7 @@ function ProviderCard({
                 ))}
               </select>
             </div>
+            {!isCursor && (
             <div>
               <label className="label">Base URL (optional)</label>
               <input
@@ -358,6 +359,7 @@ function ProviderCard({
                 </p>
               )}
             </div>
+            )}
           </div>
 
           {testResult && (
@@ -391,7 +393,6 @@ function ProviderCard({
             </button>
           </div>
         </>
-      )}
     </div>
   );
 }

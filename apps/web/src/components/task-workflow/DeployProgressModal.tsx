@@ -3,11 +3,15 @@ import type { DeployFailureAnalysis, RunDetail, TestReport, TestStep } from '@cp
 import { DiffView } from '../DiffView';
 import { DEPLOY_PROFILE_LABELS, DEPLOY_STEP_LABELS } from '@cpwork/shared';
 import { Loader2 } from 'lucide-react';
+import { buildDeployFixRequest } from '../../lib/buildDeployFixRequest';
 import {
+  taskAccent,
+  taskAccentHover,
   taskBody,
   taskCard,
   taskCodeSurface,
   taskDivider,
+  taskInput,
   taskMuted,
   taskTitle,
 } from '../execution-center/taskStyles';
@@ -48,8 +52,8 @@ function AnalysisPanel({ analysis, lastFixFailed }: { analysis: DeployFailureAna
         </ul>
       )}
       <p className="mt-2 text-xs text-blue-700">
-        Click <strong>AI fix error</strong>, add any context about the failure, then send to generate a
-        proposed fix. Review the diff, apply when ready, then redeploy.
+        Click <strong>AI fix error</strong> to scan your theme layout files and generate a
+        Magento-standard code fix automatically. Review the diff, apply, then redeploy.
       </p>
     </div>
   );
@@ -106,14 +110,19 @@ export function DeployProgressModal({
     }
   }, [phase]);
 
+  function startAiFix(instructions?: string) {
+    const text = (instructions ?? fixInstructions).trim();
+    onProposeFix?.(text || buildDeployFixRequest(analysis, deploy, detail));
+  }
+
   function openFixPrompt() {
     setShowFixPrompt(true);
-    setFixInstructions('');
+    setFixInstructions(buildDeployFixRequest(analysis, deploy, detail));
   }
 
   function submitFixPrompt() {
     setShowFixPrompt(false);
-    onProposeFix?.(fixInstructions.trim() || undefined);
+    startAiFix();
   }
 
   if (!open) return null;
@@ -248,13 +257,23 @@ export function DeployProgressModal({
               <div>
                 <p className={`text-sm font-medium ${taskTitle}`}>Describe the issue (optional)</p>
                 <p className={`mt-1 text-xs ${taskMuted}`}>
-                  Add context for the AI agent — suspected file, plugin name, what changed, or how
-                  you want it fixed. Leave blank to let the agent analyze the deploy output only.
+                  Error details from the deploy output are pre-filled below. Edit if needed, then
+                  click Start AI fix — the agent scans your theme layout files and applies a
+                  Magento-standard fix.
                 </p>
               </div>
+              {!fixInstructions.trim() && analysis && (
+                <button
+                  type="button"
+                  className={`text-xs ${taskAccent} ${taskAccentHover}`}
+                  onClick={() => setFixInstructions(buildDeployFixRequest(analysis, deploy, detail))}
+                >
+                  Insert error details from deploy output
+                </button>
+              )}
               <textarea
-                className={`min-h-[120px] w-full resize-y rounded-md border border-slate-600/60 bg-slate-900/40 px-3 py-2 text-sm ${taskBody} placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500`}
-                placeholder="e.g. The Belvg POboxes plugin may be calling parent:: in a class without a parent. Check app/code/Belvg/POboxes/Plugin/…"
+                className={`${taskInput} min-h-[160px] resize-y`}
+                placeholder="Deploy error details will appear here when you click AI fix error…"
                 value={fixInstructions}
                 onChange={(e) => setFixInstructions(e.target.value)}
                 disabled={fixing}
@@ -409,9 +428,14 @@ export function DeployProgressModal({
                   type="button"
                   className="btn-primary"
                   disabled={fixing}
-                  onClick={openFixPrompt}
+                  onClick={() => startAiFix()}
                 >
-                  AI fix error
+                  {fixing ? 'Generating fix…' : 'AI fix error'}
+                </button>
+              )}
+              {onProposeFix && !fixing && (
+                <button type="button" className="btn-secondary" onClick={openFixPrompt}>
+                  Add notes
                 </button>
               )}
               <button type="button" className="btn-secondary" onClick={onClose}>

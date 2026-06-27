@@ -15,10 +15,15 @@ async def _chat(creds: dict, req: dict) -> dict:
         "systemInstruction": {"parts": [{"text": req["system"]}]},
         "contents": [{"role": "user", "parts": [{"text": req["user"]}]}],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": req.get("temperature") if req.get("temperature") is not None else 0.2,
             **({"responseMimeType": "application/json"} if req.get("jsonMode") else {}),
         },
     }
+    gen = body["generationConfig"]
+    if req.get("maxTokens") is not None:
+        gen["maxOutputTokens"] = req["maxTokens"]
+    if req.get("topP") is not None:
+        gen["topP"] = req["topP"]
 
     try:
         resp = await _post_with_retries(

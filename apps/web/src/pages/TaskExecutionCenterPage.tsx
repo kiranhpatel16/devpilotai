@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
@@ -14,6 +14,7 @@ import type {
 import { api, getApiErrorCode, getApiErrorMessage } from '../lib/api';
 import { useExecution } from '../context/ExecutionContext';
 import { WorkflowBusyProvider, useWorkflowBusy } from '../context/WorkflowBusyContext';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { TaskHistoryGrid } from '../components/task-workflow/TaskHistoryGrid';
 import { TaskActionBar } from '../components/execution-center/TaskActionBar';
 import { AgentStatusBanner } from '../components/execution-center/AgentStatusBanner';
@@ -21,11 +22,16 @@ import { StepContentRouter } from '../components/execution-center/StepContentRou
 import {
   WorkflowTabs,
   getTabForStep,
+  normalizeWorkflowTab,
+  resolveWorkflowTab,
   type WorkflowTab,
 } from '../components/execution-center/WorkflowTabs';
 import { loadStoredNotes } from '../components/execution-center/RequirementNotesPanel';
 import { customTaskPath } from '../lib/customTaskRoutes';
-import { getDeployBusyDetail, shouldPollWorkflow } from '../lib/workflowStatus';
+import { getDeployBusyDetail, getCodeGenBusyDetail, isCodeGenerationActive, shouldPollWorkflow } from '../lib/workflowStatus';
+import { formatUsageTotals } from '../lib/aiUsageFormat';
+import { artifactsMatchTask, runMatchesTask } from '../lib/workflowTaskMatch';
+import { regenerateRequirementAnalysis } from '../lib/regenerateRequirementAnalysis';
 import { taskCard, taskHeading, taskMuted } from '../components/execution-center/taskStyles';
 
 interface ProjectDetail {
@@ -67,7 +73,10 @@ function TaskExecutionCenterPageInner() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('requirements');
+  const [codeGenPending, setCodeGenPending] = useState(false);
+  const autoRegenAnalysisRef = useRef<string | null>(null);
 
   const providersQ = useQuery({
     queryKey: ['ai-providers'],
@@ -133,6 +142,17 @@ function TaskExecutionCenterPageInner() {
     enabled: !!projectId && isCustomRoute && !!runIdParam && !detail,
   });
 
+  const taskRunQ = useQuery({
+    queryKey: ['workflow-run-by-task', projectId, selectedKey],
+    queryFn: async () =>
+      (
+        await api.get<{ detail: RunDetail | null }>(
+          `/workflow/runs/by-task?projectId=${encodeURIComponent(projectId)}&jiraKey=${encodeURIComponent(selectedKey!)}`,
+        )
+      ).data.detail,
+    enabled: !!projectId && !!selectedKey && !custom && !isCustomRoute && !detail,
+  });
+
   const startWorkflowM = useMutation({
     mutationFn: async (input: {
       jiraKey?: string | null;
@@ -151,7 +171,8 @@ function TaskExecutionCenterPageInner() {
     onSuccess: (d) => {
       setDetail(d);
       setShowHistory(false);
-      if (d.workflow?.currentStep) setWorkflowTab(getTabForStep(d.workflow.currentStep));
+      if (d.workflow?.currentStep) setWorkflowTab(resolveWorkflowTab(d));
+      queryClient.invalidateQueries({ queryKey: ['workflow-run-by-task', projectId] });
       if (!d.run.jiraKey) {
         navigate(customTaskPath(projectId, d.run.id), { replace: true });
       }
@@ -171,7 +192,7 @@ function TaskExecutionCenterPageInner() {
     },
     onSuccess: (d) => {
       setDetail(d);
-      if (d.workflow?.currentStep) setWorkflowTab(getTabForStep(d.workflow.currentStep));
+      if (d.workflow?.currentStep) setWorkflowTab(resolveWorkflowTab(d));
     },
     onError: (err) => setError({ message: getApiErrorMessage(err) }),
   });
@@ -206,6 +227,25 @@ function TaskExecutionCenterPageInner() {
     onError: (err) => setError({ message: getApiErrorMessage(err) }),
   });
 
+  const deleteM = useMutation({
+    mutationFn: async (runId: string) => {
+      await api.delete(`/workflow/runs/${runId}`);
+    },
+    onSuccess: () => {
+      setShowDeleteConfirm(false);
+      setDetail(null);
+      queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['workflow-run-by-task', projectId] });
+      queryClient.removeQueries({ queryKey: ['workflow-run-by-task', projectId, selectedKey] });
+      if (custom || isCustomRoute) {
+        navigate(`/workspaces/${projectId}?tab=custom`);
+      } else {
+        navigate(`/workspaces/${projectId}`);
+      }
+    },
+    onError: (err) => setError({ message: getApiErrorMessage(err) }),
+  });
+
   useEffect(() => {
     if (isCustomRoute) {
       setCustom(true);
@@ -219,10 +259,26 @@ function TaskExecutionCenterPageInner() {
   }, [decodedTaskKey, isCustomRoute]);
 
   useEffect(() => {
-    if (detail?.workflow?.currentStep) {
-      setWorkflowTab(getTabForStep(detail.workflow.currentStep));
+    if (custom || isCustomRoute || !selectedKey) return;
+    if (!detail) return;
+    if (!runMatchesTask(detail, projectId, selectedKey)) {
+      setDetail(null);
     }
-  }, [detail?.workflow?.currentStep]);
+  }, [selectedKey, projectId, custom, isCustomRoute, detail]);
+
+  useEffect(() => {
+    if (!detail) return;
+    if (codeGenPending || isCodeGenerationActive(detail)) return;
+    setWorkflowTab(resolveWorkflowTab(detail));
+  }, [
+    detail?.workflow?.currentStep,
+    detail?.output?.files?.length,
+    detail?.applied,
+    detail?.run.id,
+    detail?.run.status,
+    detail?.workflow?.agentGeneration?.status,
+    codeGenPending,
+  ]);
 
   useEffect(() => {
     setProjectName(projectQ.data?.project.name ?? null);
@@ -265,7 +321,7 @@ function TaskExecutionCenterPageInner() {
       setCustomTitle(restored.workflow?.customTitle || '');
     }
     if (restored.workflow?.currentStep) {
-      setWorkflowTab(getTabForStep(restored.workflow.currentStep));
+      setWorkflowTab(resolveWorkflowTab(restored));
     }
   }
 
@@ -278,6 +334,52 @@ function TaskExecutionCenterPageInner() {
     }
     queryClient.invalidateQueries({ queryKey: ['workflow-history', projectId] });
   }
+
+  useEffect(() => {
+    if (!taskRunQ.data || detail) return;
+    if (!runMatchesTask(taskRunQ.data, projectId, selectedKey)) return;
+    applyRestoredDetail(taskRunQ.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskRunQ.data, detail, projectId, selectedKey]);
+
+  useEffect(() => {
+    if (!detail?.run.id || custom || isCustomRoute || !selectedKey) return;
+    if (artifactsMatchTask(detail)) return;
+
+    let cancelled = false;
+    const runId = detail.run.id;
+
+    async function healStaleArtifacts() {
+      if (detail.workflow?.requirementAnalysis) {
+        const token = `${runId}:regen`;
+        if (autoRegenAnalysisRef.current === token) return;
+        autoRegenAnalysisRef.current = token;
+        try {
+          const fresh = await regenerateRequirementAnalysis(runId);
+          if (!cancelled && runMatchesTask(fresh, projectId, selectedKey)) {
+            setDetail(fresh);
+          }
+        } catch {
+          autoRegenAnalysisRef.current = null;
+        }
+        return;
+      }
+
+      try {
+        const res = await api.get<{ detail: RunDetail }>(`/workflow/runs/${runId}`);
+        if (!cancelled && runMatchesTask(res.data.detail, projectId, selectedKey)) {
+          setDetail(res.data.detail);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    void healStaleArtifacts();
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.run.id, detail?.workflow?.requirementAnalysis, selectedKey, projectId, custom, isCustomRoute]);
 
   useEffect(() => {
     const restored = (location.state as WorkflowRestoreLocationState | null)?.restoredDetail;
@@ -301,13 +403,29 @@ function TaskExecutionCenterPageInner() {
   const noProviders = providersQ.isSuccess && providers.length === 0;
 
   const wf = detail?.workflow;
-  const polling = shouldPollWorkflow(detail);
+  const polling = shouldPollWorkflow(detail) || codeGenPending;
   const deployBusyDetail = getDeployBusyDetail(detail?.deploy ?? null);
+  const codeGenActive = codeGenPending || isCodeGenerationActive(detail);
+  const codeGenBusyDetail = (() => {
+    if (!detail) return undefined;
+    const parts = [getCodeGenBusyDetail(detail)];
+    const usage = formatUsageTotals(detail.usageTotals);
+    if (usage.tokensLine !== '—') parts.push(usage.tokensLine);
+    if (usage.creditsLine !== '—') parts.push(usage.creditsLine);
+    return parts.filter(Boolean).join(' · ');
+  })();
 
   useWorkflowBusy('start-task', startWorkflowM.isPending, 'Starting task…', 'Creating workflow run and loading task details from Jira.');
   useWorkflowBusy('pause-task', pauseM.isPending, 'Updating task…', 'Applying pause or resume to this workflow run.');
   useWorkflowBusy('cancel-task', cancelM.isPending, 'Cancelling task…', 'Stopping the workflow and clearing the active run.');
+  useWorkflowBusy('delete-task', deleteM.isPending, 'Deleting task…', 'Removing this workflow run from history.');
   useWorkflowBusy('navigate-step', navigateStepM.isPending, 'Updating step…', 'Moving to the selected workflow step.');
+  useWorkflowBusy(
+    'code-generation',
+    codeGenActive,
+    'Generating code…',
+    codeGenBusyDetail,
+  );
   useWorkflowBusy(
     'deploy-running',
     !!detail?.deploy?.running,
@@ -386,6 +504,16 @@ function TaskExecutionCenterPageInner() {
 
   return (
     <div className="space-y-4">
+      {showDeleteConfirm && detail && (
+        <ConfirmDeleteModal
+          title="Delete task"
+          message={`Permanently delete this workflow run${detail.run.jiraKey ? ` for ${detail.run.jiraKey}` : ''}? It will be removed from history and cannot be undone.`}
+          onClose={() => setShowDeleteConfirm(false)}
+          onConfirm={async () => {
+            await deleteM.mutateAsync(detail.run.id);
+          }}
+        />
+      )}
       <section className="min-w-0 space-y-4">
         <div className={`${taskCard} space-y-2 px-4 py-3`}>
           <TaskActionBar
@@ -399,10 +527,12 @@ function TaskExecutionCenterPageInner() {
             statusLabel={boardTask?.statusCategory ?? jiraSnapshot?.statusCategory}
             pausePending={pauseM.isPending}
             cancelPending={cancelM.isPending}
+            deletePending={deleteM.isPending}
             startPending={startWorkflowM.isPending}
             canStart={hasTask && !noProviders && (!custom || !!customTitle.trim())}
             onPause={() => detail && pauseM.mutate()}
             onCancel={() => (detail ? cancelM.mutate() : reset())}
+            onDelete={detail ? () => setShowDeleteConfirm(true) : undefined}
             onStart={handleStartTask}
             onStartCustom={startCustomTask}
             onShowHistory={() => {
@@ -415,9 +545,10 @@ function TaskExecutionCenterPageInner() {
             <>
               <WorkflowTabs
                 currentStep={wf?.currentStep}
-                activeTab={workflowTab}
-                onTabChange={setWorkflowTab}
+                activeTab={normalizeWorkflowTab(workflowTab)}
+                onTabChange={(tab) => setWorkflowTab(tab)}
                 preStart={preStart}
+                detail={detail}
               />
 
               {showAgentBanner && (
@@ -425,11 +556,12 @@ function TaskExecutionCenterPageInner() {
                   detail={detail}
                   runId={detail?.run.id ?? null}
                   polling={polling}
+                  onDetailUpdate={setDetail}
                 />
               )}
 
               <StepContentRouter
-                tab={workflowTab}
+                tab={normalizeWorkflowTab(workflowTab)}
                 detail={detail}
                 preStart={preStart}
                 project={project}
@@ -444,6 +576,8 @@ function TaskExecutionCenterPageInner() {
                 onCustomTitleChange={setCustomTitle}
                 onWorkflowTabChange={setWorkflowTab}
                 onError={(message) => setError({ message })}
+                codeGenPending={codeGenPending}
+                onCodeGenPending={setCodeGenPending}
               />
             </>
           )}

@@ -21,7 +21,8 @@
     "build:shared": "npm run build --workspace @cpwork/shared"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "playwright": "^1.61.1"
   },
   "engines": {
     "node": ">=20"

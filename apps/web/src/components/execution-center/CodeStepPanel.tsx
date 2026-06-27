@@ -1,9 +1,12 @@
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import type { RunDetail, TaskWorkflowStep } from '@cpwork/shared';
 import { FilesChangedPanel } from './FilesChangedPanel';
+import { CodeGenerationProgressPanel } from './CodeGenerationProgressPanel';
 import { WorkflowStepContent } from '../task-workflow/WorkflowStepContent';
-import { previousStep } from '../task-workflow/constants';
+import { previousStep, migrateStep } from '../task-workflow/constants';
 import type { AiProviderInfo, Project } from '@cpwork/shared';
+import { getEffectiveLlm } from '../../lib/effectiveLlm';
+import { isCodeGenerationActive } from '../../lib/workflowStatus';
 import {
   taskBody,
   taskBtnGhost,
@@ -25,6 +28,7 @@ interface CodeStepPanelProps {
   onChange: (d: RunDetail) => void;
   onNavigate: (step: TaskWorkflowStep) => void;
   onWorkflowTabChange: (tab: WorkflowTab) => void;
+  codeGenPending?: boolean;
 }
 
 export function CodeStepPanel({
@@ -34,23 +38,34 @@ export function CodeStepPanel({
   onChange,
   onNavigate,
   onWorkflowTabChange,
+  codeGenPending = false,
 }: CodeStepPanelProps) {
   const { run, output, workflow: wf } = detail;
-  const step = wf!.currentStep;
+  const step = migrateStep(wf!.currentStep);
   const hasOutput = !!(output?.files?.length);
   const isAgentStep = step === 'agent';
-  const showLiveAgent = isAgentStep && !hasOutput;
+  const isGenerating = codeGenPending || isCodeGenerationActive(detail);
+  const showLiveAgent = isAgentStep && !hasOutput && !isGenerating;
 
-  const providerLabel = run.provider ?? 'AI';
+  const { provider: effectiveProvider, model: effectiveModel } = getEffectiveLlm(
+    detail,
+    project,
+    providers,
+    'coding',
+  );
+  const providerLabel = effectiveProvider ?? 'AI';
   const modelLabel =
-    run.model ?? providers.find((p) => p.id === run.provider)?.defaultModel ?? 'default model';
+    effectiveModel ??
+    providers.find((p) => p.id === effectiveProvider)?.defaultModel ??
+    'default model';
 
   const prev = previousStep(step);
   const canGoReview = hasOutput;
-  const canGoTests = detail.applied && step !== 'agent';
+  const canGoBuild = hasOutput && detail.applied && step === 'code_review';
 
   return (
-    <div className="space-y-4">
+    <div className="relative min-h-[320px]">
+      <div className={`space-y-4 ${isGenerating ? 'pointer-events-none opacity-90' : ''}`}>
       {hasOutput && (
         <div className={`${taskSurface} px-4 py-3`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -88,7 +103,16 @@ export function CodeStepPanel({
         </div>
       )}
 
-      {showLiveAgent ? (
+      {isGenerating ? (
+        <div className="relative z-30">
+          <CodeGenerationProgressPanel
+            detail={detail}
+            generation={wf?.agentGeneration}
+            providerLabel={providerLabel}
+            modelLabel={modelLabel}
+          />
+        </div>
+      ) : showLiveAgent ? (
         <WorkflowStepContent
           detail={detail}
           project={project}
@@ -103,15 +127,14 @@ export function CodeStepPanel({
           {!detail.applied && (
             <div className={`${taskPanel} border-amber-500/30 bg-amber-500/5 px-4 py-3`}>
               <p className={`text-sm ${taskBody}`}>
-                Review diffs below, then go to <strong className={taskStrong}>Review</strong> to apply
-                changes before running tests.
+                Review diffs on the Review tab and apply changes, then run build verification.
               </p>
               <button
                 type="button"
                 className={`${taskBtnSecondary} mt-2`}
                 onClick={() => onWorkflowTabChange('review')}
               >
-                Go to Review →
+                Open full review →
               </button>
             </div>
           )}
@@ -127,7 +150,7 @@ export function CodeStepPanel({
             className={`${taskBtnSecondary} mt-3`}
             onClick={() => onWorkflowTabChange('plan')}
           >
-            Go to Plan →
+            Go to Plan &amp; approval →
           </button>
         </div>
       )}
@@ -143,31 +166,32 @@ export function CodeStepPanel({
             className={taskBtnGhost}
             onClick={() => onWorkflowTabChange('plan')}
           >
-            ← Plan
+            ← Plan &amp; approval
           </button>
         )}
         <div className="flex items-center gap-2">
-          {canGoReview && (
+          {hasOutput && !detail.applied && canGoReview && (
             <button
               type="button"
               className={taskBtnSecondary}
               onClick={() => onWorkflowTabChange('review')}
             >
-              Review
+              Review &amp; apply
               <ArrowRight className="h-4 w-4" />
             </button>
           )}
-          {canGoTests && (
+          {canGoBuild && (
             <button
               type="button"
               className={taskBtnPrimary}
-              onClick={() => onWorkflowTabChange('tests')}
+              onClick={() => onWorkflowTabChange('build')}
             >
-              Tests
+              Build verification
               <ArrowRight className="h-4 w-4" />
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ def _map_row(row) -> dict:
         "projectId": row["project_id"],
         "implementationQualityRules": row["implementation_quality_rules"],
         "magentoRules": row["magento_rules"],
+        "planningRules": row["planning_rules"] if "planning_rules" in row.keys() else None,
         "agentOutputContract": row["agent_output_contract"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -46,12 +47,14 @@ class _ProjectAiRulesRepo:
                 """UPDATE project_ai_rules SET
                    implementation_quality_rules=?,
                    magento_rules=?,
+                   planning_rules=?,
                    agent_output_contract=?,
                    updated_at=?
                    WHERE project_id=?""",
                 (
                     input.get("implementationQualityRules"),
                     input.get("magentoRules"),
+                    input.get("planningRules"),
                     input.get("agentOutputContract"),
                     ts,
                     project_id,
@@ -62,13 +65,14 @@ class _ProjectAiRulesRepo:
             db.execute(
                 """INSERT INTO project_ai_rules (
                    id, project_id, implementation_quality_rules,
-                   magento_rules, agent_output_contract, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?)""",
+                   magento_rules, planning_rules, agent_output_contract, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?)""",
                 (
                     rid,
                     project_id,
                     input.get("implementationQualityRules"),
                     input.get("magentoRules"),
+                    input.get("planningRules"),
                     input.get("agentOutputContract"),
                     ts,
                     ts,
